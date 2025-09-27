@@ -10,7 +10,12 @@ from typing import Any, Dict, List, Sequence
 import cbor2
 import pytest
 
-from tspi_kit import Archiver, StoreReplayer, TSPIProducer
+from tspi_kit import (
+    Archiver,
+    COMMAND_SUBJECT_PREFIX,
+    StoreReplayer,
+    TSPIProducer,
+)
 from tspi_kit.datastore import MessageRecord, TagRecord
 
 
@@ -271,9 +276,23 @@ def test_archiver_persists_messages_commands_and_tags() -> None:
             "payload": {"units": "metric"},
         }
         await jetstream.publish(
-            "cmd.display.units",
+            f"{COMMAND_SUBJECT_PREFIX}.units",
             cbor2.dumps(command_payload),
             headers={"Nats-Msg-Id": command_payload["cmd_id"]},
+            timestamp=base_epoch + 0.9,
+        )
+
+        marker_payload = {
+            "cmd_id": "00000000-0000-0000-0000-000000000002",
+            "name": "display.marker_color",
+            "ts": datetime.fromtimestamp(base_epoch + 0.5, tz=timezone.utc).isoformat(),
+            "sender": "ui-1",
+            "payload": {"marker_color": "#ff00ff"},
+        }
+        await jetstream.publish(
+            f"{COMMAND_SUBJECT_PREFIX}.marker_color",
+            cbor2.dumps(marker_payload),
+            headers={"Nats-Msg-Id": marker_payload["cmd_id"]},
         )
 
         tag_payload = {
@@ -292,14 +311,18 @@ def test_archiver_persists_messages_commands_and_tags() -> None:
         )
 
         stored = await archiver.drain(batch_size=10)
-        assert stored == 3
-        assert await datastore.count_messages() == 3
-        assert await datastore.count_commands() == 1
+        assert stored == 4
+        assert await datastore.count_messages() == 4
+        assert await datastore.count_commands() == 2
         assert await datastore.count_tags() == 1
 
         latest = await datastore.latest_command("display.units")
         assert latest is not None
         assert latest["payload"]["units"] == "metric"
+
+        latest_marker = await datastore.latest_command("display.marker_color")
+        assert latest_marker is not None
+        assert latest_marker["payload"]["marker_color"] == "#ff00ff"
 
         tag_record = await datastore.get_tag("tag-1")
         assert tag_record is not None
@@ -326,6 +349,20 @@ def test_store_replayer_replays_with_pacing() -> None:
             datagram = _geocentric_datagram(55 + index, 200, 10.0 + index * 0.5)
             await producer.ingest_async(datagram, recv_time=base_epoch + index * 0.2)
 
+        command_payload = {
+            "cmd_id": "10000000-0000-0000-0000-000000000000",
+            "name": "display.units",
+            "ts": datetime.fromtimestamp(base_epoch + 0.9, tz=timezone.utc).isoformat(),
+            "sender": "ui-test",
+            "payload": {"units": "imperial"},
+        }
+        await jetstream.publish(
+            f"{COMMAND_SUBJECT_PREFIX}.units",
+            cbor2.dumps(command_payload),
+            headers={"Nats-Msg-Id": command_payload["cmd_id"]},
+            timestamp=base_epoch + 0.9,
+        )
+
         await archiver.drain(batch_size=10)
 
         sleep_calls: list[float] = []
@@ -337,15 +374,17 @@ def test_store_replayer_replays_with_pacing() -> None:
         start = base_epoch - 1
         end = base_epoch + 10
         messages = await replayer.replay_time_window("training", start, end)
-        assert len(messages) == 3
+        assert len(messages) == 4
+        assert any(msg.kind == "command" for msg in messages)
 
         # The first message should not trigger a delay, subsequent ones honour recv_epoch_ms deltas.
         assert sleep_calls[0] == pytest.approx(0.2)
         assert sleep_calls[1] == pytest.approx(0.2)
 
         replayed_subjects = [msg.subject for msg in jetstream.replay_messages]
-        assert len(replayed_subjects) == 3
+        assert len(replayed_subjects) == 4
         assert replayed_subjects[0] == "player.training.playout.geocentric.55"
+        assert replayed_subjects[-1] == "player.training.playout.cmd.display.units"
 
     asyncio.run(_exercise())
 

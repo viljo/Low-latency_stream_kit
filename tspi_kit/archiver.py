@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 import cbor2
 
+from .commands import COMMAND_SUBJECT_PREFIX
 from .datastore import TimescaleDatastore
 
 
@@ -40,7 +41,7 @@ class Archiver:
                 "tspi.>", durable=f"{self._durable_prefix}.telemetry"
             ),
             "commands": await self._jetstream.pull_subscribe(
-                "cmd.display.units", durable=f"{self._durable_prefix}.commands"
+                f"{COMMAND_SUBJECT_PREFIX}.>", durable=f"{self._durable_prefix}.commands"
             ),
             "tags": await self._jetstream.pull_subscribe(
                 "tags.>", durable=f"{self._durable_prefix}.tags"
@@ -71,7 +72,7 @@ class Archiver:
                 if message_id is None:
                     continue
                 stored += 1
-                if message.subject.startswith("cmd.display"):
+                if message.subject.startswith(COMMAND_SUBJECT_PREFIX):
                     await self._datastore.upsert_command(
                         payload, message_id=message_id, published_ts=timestamp
                     )
@@ -99,7 +100,7 @@ class Archiver:
 
     @staticmethod
     def _classify_kind(subject: str, default_kind: str) -> str:
-        if subject.startswith("cmd.display"):
+        if subject.startswith(COMMAND_SUBJECT_PREFIX):
             return "command"
         if subject.startswith("tags."):
             return "tag"

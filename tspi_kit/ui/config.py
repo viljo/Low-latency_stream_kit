@@ -17,3 +17,5 @@ class UiConfig:
     default_rate: float = 1.0
     default_clock: str = "receive"
     scrub_history_size: int = 600
+    default_units: str = "metric"
+    default_marker_color: str = "#00ff00"
