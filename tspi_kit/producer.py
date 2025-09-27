@@ -1,4 +1,4 @@
-"""Headless TSPI producer that publishes to JetStream."""
+"""Headless TSPI to JetStream producer that publishes to JetStream."""
 from __future__ import annotations
 
 import inspect
