@@ -269,7 +269,7 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
 
     def __init__(
         self,
-        sources: Mapping[str, ReceiverFactory | TSPIReceiver],
+        sources: Mapping[str, ReceiverFactory | TSPIReceiver] | ReceiverFactory | TSPIReceiver,
         *,
         ui_config: Optional[UiConfig] = None,
         initial_source: str = "live",
@@ -284,8 +284,9 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
                 smooth_zoom=self._config.smooth_zoom,
             )
         )
+        normalized_sources = self._coerce_sources(sources)
         self._state = PlayerState(
-            sources,
+            normalized_sources,
             ui_config=self._config,
             initial_source=initial_source,
             map_widget=self._map,
@@ -343,6 +344,16 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._metrics_label)
 
         self._state.metrics_updated.connect(self._update_metrics)
+
+    @staticmethod
+    def _coerce_sources(
+        sources: Mapping[str, ReceiverFactory | TSPIReceiver] | ReceiverFactory | TSPIReceiver,
+    ) -> Mapping[str, ReceiverFactory | TSPIReceiver]:
+        if isinstance(sources, TSPIReceiver) or callable(sources):
+            return {"live": sources}
+        if hasattr(sources, "items"):
+            return sources  # type: ignore[return-value]
+        raise TypeError("Unsupported sources object for JetStreamPlayerWindow")
 
     def _toggle_play(self) -> None:
         if self._state.playing:
@@ -458,3 +469,4 @@ def connect_in_memory(
 def ensure_offscreen(headless: bool) -> None:
     if headless:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+

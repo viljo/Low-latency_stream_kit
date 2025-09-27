@@ -1,26 +1,12 @@
-"""Pytest configuration providing a lightweight Qt test harness."""
+"""Stub pytest plugin providing a ``qtbot`` fixture without Qt bindings."""
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Disable auto-loading external pytest plugins that require native Qt bindings.
-os.environ.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_OPENGL", "software")
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 class _QtBot:
-    """Very small helper mimicking the behaviour of ``pytest-qt``'s qtbot."""
-
     def __init__(self) -> None:
         self._widgets: list[Any] = []
 
@@ -43,3 +29,9 @@ class _QtBot:
 @pytest.fixture
 def qtbot() -> _QtBot:
     return _QtBot()
+
+
+def pytest_configure(config: pytest.Config) -> None:  # pragma: no cover - compatibility
+    config.addinivalue_line(
+        "markers", "qt_no_exception_capture: marker ignored by the stub plugin"
+    )
