@@ -106,9 +106,9 @@ def test_parse_geocentric_datagram() -> None:
         "ay_mps2": pytest.approx(-0.34),
         "az_mps2": pytest.approx(0.56),
     }
-    assert parsed.deduplication_id() == "501:123:15340"
+    assert parsed.deduplication_id() == "501:123:1.5340"
     assert build_subject(parsed) == "tspi.geocentric.501"
-    assert message_headers(parsed) == {"Nats-Msg-Id": "501:123:15340"}
+    assert message_headers(parsed) == {"Nats-Msg-Id": "501:123:1.5340"}
 
     _validate(parsed)
 
@@ -155,7 +155,7 @@ def test_parse_spherical_datagram() -> None:
         "elevation_accel_dps2": pytest.approx(-0.34),
         "range_accel_mps2": pytest.approx(0.56),
     }
-    assert parsed.deduplication_id() == "2048:42:923400"
+    assert parsed.deduplication_id() == "2048:42:92.3400"
     assert build_subject(parsed, stream_prefix="custom") == "custom.spherical.2048"
 
     _validate(parsed)

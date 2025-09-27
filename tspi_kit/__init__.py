@@ -14,7 +14,6 @@ from .ui import (
     JetStreamPlayerWindow,
     MapPreviewWidget,
     MapSmoother,
-    PCAPPlayerController,
     PlayerState,
     UiConfig,
 )
@@ -40,6 +39,5 @@ __all__ = [
     "JetStreamPlayerWindow",
     "HeadlessPlayerRunner",
     "PlayerState",
-    "PCAPPlayerController",
     "GeneratorController",
 ]

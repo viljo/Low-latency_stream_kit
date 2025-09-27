@@ -7,9 +7,9 @@ from pathlib import Path
 import dpkt
 
 from tspi_kit import TSPIProducer
+from tspi_kit.pcap import PCAPReplayer
 from tspi_kit.ui import HeadlessPlayerRunner, UiConfig
 from tspi_kit.ui.player import connect_in_memory
-from tspi_kit.ui.pcap_player import build_headless_player_from_pcap
 from tspi_kit.ui.generator import build_headless_generator
 
 
@@ -40,15 +40,16 @@ def _geocentric_datagram(sensor_id: int, time_ticks: int) -> bytes:
 
 
 def test_headless_player_emits_metrics(capsys):
-    stream, receiver = connect_in_memory()
+    stream, sources = connect_in_memory()
     producer = TSPIProducer(stream)
     for index in range(5):
         producer.ingest(_geocentric_datagram(500 + index, 10_000 + index * 100), recv_time=1_700_000_000.0 + index)
     runner = HeadlessPlayerRunner(
-        receiver,
+        sources,
         ui_config=UiConfig(metrics_interval=0.0),
         duration=0.1,
         stdout_json=True,
+        initial_source="live",
     )
     runner.run()
     out = capsys.readouterr().out
@@ -61,7 +62,11 @@ def test_pcap_headless_pipeline(tmp_path: Path):
     with pcap_path.open("wb") as handle:
         writer = dpkt.pcap.Writer(handle, linktype=147)
         writer.writepkt(datagram, ts=0.0)
-    runner = build_headless_player_from_pcap(pcap_path, rate=2.0)
+    stream, sources = connect_in_memory({"live": "tspi.>"})
+    producer = TSPIProducer(stream)
+    replayer = PCAPReplayer(pcap_path)
+    replayer.replay(producer, rate=2.0, base_epoch=0.0)
+    runner = HeadlessPlayerRunner(sources, initial_source="live")
     runner.run()
 
 

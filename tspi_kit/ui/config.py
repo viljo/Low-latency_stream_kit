@@ -16,3 +16,4 @@ class UiConfig:
     rate_max: float = 4.0
     default_rate: float = 1.0
     default_clock: str = "receive"
+    scrub_history_size: int = 600

@@ -5,8 +5,8 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 ## Features
 - **Producer** – UDP listener that parses TSPI datagrams, adds receive timestamps, and publishes CBOR payloads to JetStream with deduplication headers.
 - **Receiver** – Durable JetStream consumer that decodes CBOR, validates against the Draft 2020-12 schema, and emits JSON lines or logs.
-- **JetStream Player** – Qt5 application (GUI/headless) with rate control, seek scaffolding, metrics reporting, and room-based playout subjects backed by smoothed map previews.
-- **PCAP Player** – Replays 37-byte TSPI frames from pcap/pcapng files into the UDP producer with adjustable rate, loop, and headless metrics.
+- **JetStream Player** – Unified Qt5 application (GUI/headless) with live ↔ historical source switching, timeline scrubbing, rate control, metrics, and smoothed map previews.
+- **PCAP Replayer** – Utility to ingest 37-byte TSPI captures and push them into the JetStream pipeline for offline testing.
 - **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
 
@@ -41,7 +41,7 @@ pip install -e .[ui]
    ```
 4. **Play back in headless mode**
    ```bash
-   python player_qt.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
+   python player_qt.py --headless --source live --nats-server nats://127.0.0.1:4222 --duration 10
    ```
 
 ## Components
@@ -49,7 +49,7 @@ pip install -e .[ui]
 - UDP listener on port 30000 (configurable)
 - Parses BAPS TSPI v4 datagrams → Python dict → CBOR
 - Publishes to `tspi.geocentric.<sensor_id>` or `tspi.spherical.<sensor_id>`
-- Dedup headers: `Nats-Msg-Id = "<sensor>:<day>:<time_s_int>"`
+- Dedup headers: `Nats-Msg-Id = "<sensor>:<day>:<time_s>"`
 - Options: sensor filters, custom stream, multiple NATS servers
 
 ### receiver.py
@@ -59,15 +59,9 @@ pip install -e .[ui]
 - Batch pull with back-off on idle
 
 ### player_qt.py
-- GUI: placeholder Qt5 window ready for controls/map integration
-- Headless: consumes JetStream, reports metrics (`frames`, `rate`, `clock`, `room`)
-- Flags: `--headless`, `--rate`, `--clock`, `--room`, `--metrics-interval`, `--exit-on-idle`
-
-### pcap_player_qt.py
-- Reads pcap/pcapng files (37-byte TSPI frames)
-- Streams frames to UDP producer respecting capture timing × rate multiplier
-- Headless metrics include frames sent, target host/port
-- GUI placeholder for future full player UI
+- Unified GUI/headless JetStream receiver with live vs historical source selector
+- Timeline scrubber supports "YouTube-style" scrolling through buffered frames
+- Flags: `--headless`, `--source`, `--rate`, `--clock`, `--room`, `--metrics-interval`, `--exit-on-idle`
 
 ### tspi_generator_qt.py
 - Simulates geocentric TSPI for configurable fleet sizes

@@ -61,10 +61,10 @@ def build_headless_generator(
     rate: float = 10.0,
     duration: float = 1.0,
 ) -> HeadlessPlayerRunner:
-    stream, receiver = connect_in_memory()
+    stream, sources = connect_in_memory({"live": "tspi.>"})
     producer = TSPIProducer(stream)
     config = FlightConfig(count=count, rate_hz=rate)
     generator = TSPIFlightGenerator(config)
     controller = GeneratorController(generator, producer)
     controller.run(duration)
-    return HeadlessPlayerRunner(receiver)
+    return HeadlessPlayerRunner(sources, initial_source="live")
