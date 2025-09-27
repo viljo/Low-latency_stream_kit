@@ -51,7 +51,7 @@ class ProducerProtocol(asyncio.DatagramProtocol):
             self._handler(data)
         except Exception:  # pragma: no cover - logged for operator visibility
             self._metrics.dropped += 1
-            LOGGER.exception("Failed to ingest TSPI datagram from %%s", addr)
+            LOGGER.exception("Failed to ingest TSPI datagram from %s", addr)
         else:
             self._metrics.frames += 1
 
