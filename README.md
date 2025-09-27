@@ -26,6 +26,7 @@ pip install -e .[ui]
 ```
 
 ### Quick Start
+
 1. **Start NATS JetStream**
    ```bash
    nats-server --jetstream --store_dir=/tmp/nats-js
@@ -88,3 +89,18 @@ Map previews currently use placeholder widgets. Final integration will use PyQtW
 
 ## License
 Apache License 2.0 — see `LICENSE`.
+
+### Demo helper script
+The `./demo` helper orchestrates a full demonstration environment. It verifies system
+and Python dependencies, launches a three-node NATS JetStream cluster, starts the
+headless TSPI data generator, and streams data to both a receiver and the headless
+player. Run it from the repository root:
+
+```bash
+./demo
+```
+
+Use `--duration` to stop automatically after a fixed interval or `Ctrl+C` to exit
+manually. Additional options such as `--count` and `--rate` adjust the simulator load,
+and `--log-dir` stores JetStream configuration and logs in a persistent directory.
+

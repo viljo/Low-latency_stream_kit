@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""Helper script to launch a full demo of the low-latency stream kit."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import importlib.metadata
+import types
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from textwrap import dedent
+from typing import Iterable, List, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+APT_UPDATED = False
+
+
+def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the HA JetStream demo setup.")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Optional duration (seconds) to run before shutting down. Defaults to running until interrupted.",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=10,
+        help="Number of simulated aircraft to generate.",
+    )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=20.0,
+        help="Generation rate in Hertz for the simulator.",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        help="Optional directory to store JetStream node logs. Defaults to a temporary directory.",
+    )
+    return parser.parse_args(argv)
+
+
+def ensure_python_version() -> None:
+    if sys.version_info < (3, 11):
+        raise RuntimeError("Python 3.11 or newer is required to run the demo helper script.")
+
+
+def ensure_command(command: str, *, apt_package: str | None = None) -> None:
+    if shutil.which(command):
+        return
+    if apt_package and shutil.which("apt-get"):
+        install_with_apt(apt_package)
+        if shutil.which(command):
+            return
+    raise RuntimeError(f"Required command '{command}' is not available on PATH.")
+
+
+def install_with_apt(package: str) -> None:
+    global APT_UPDATED
+    env = os.environ.copy()
+    env.setdefault("DEBIAN_FRONTEND", "noninteractive")
+    if not APT_UPDATED:
+        subprocess.run(["apt-get", "update"], check=True, env=env, stdout=subprocess.DEVNULL)
+        APT_UPDATED = True
+    subprocess.run(["apt-get", "install", "-y", package], check=True, env=env)
+
+
+def read_requirements(path: Path) -> List[Tuple[str, str]]:
+    requirements: List[Tuple[str, str]] = []
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if raw_line.startswith(" ") or raw_line.startswith("\t"):
+            continue
+        requirement = line.split("#", 1)[0].strip()
+        if not requirement:
+            continue
+        name = requirement
+        for delimiter in ("==", ">=", "<=", "~=", ">", "<"):
+            if delimiter in requirement:
+                name = requirement.split(delimiter, 1)[0].strip()
+                break
+        requirements.append((name, requirement))
+    return requirements
+
+
+def ensure_python_dependencies(requirements_path: Path) -> None:
+    missing: List[str] = []
+    for name, requirement in read_requirements(requirements_path):
+        try:
+            installed_version = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(requirement)
+            continue
+        if "==" in requirement:
+            expected = requirement.split("==", 1)[1].strip()
+            if installed_version != expected:
+                missing.append(requirement)
+    if missing:
+        print(f"Installing missing Python packages: {', '.join(missing)}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+    else:
+        print("All required Python packages are already installed.")
+
+
+class JetStreamClusterManager:
+    """Manage a local multi-node JetStream cluster."""
+
+    def __init__(
+        self,
+        replicas: int = 3,
+        *,
+        base_client_port: int = 4222,
+        base_cluster_port: int = 6222,
+        base_monitor_port: int = 8222,
+        log_dir: Path | None = None,
+    ) -> None:
+        self.replicas = replicas
+        self.base_client_port = base_client_port
+        self.base_cluster_port = base_cluster_port
+        self.base_monitor_port = base_monitor_port
+        self._temp_dir_obj = tempfile.TemporaryDirectory() if log_dir is None else None
+        self.base_dir = (Path(self._temp_dir_obj.name) if self._temp_dir_obj else log_dir).resolve()
+        self.config_dir = self.base_dir / "configs"
+        self.store_dir = self.base_dir / "store"
+        self.logs_dir = self.base_dir / "logs"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self._processes: List[subprocess.Popen[str]] = []
+        self._log_handles: List[object] = []
+
+    @property
+    def client_urls(self) -> List[str]:
+        return [f"nats://127.0.0.1:{self.base_client_port + index}" for index in range(self.replicas)]
+
+    def _config_text(self, index: int) -> str:
+        node_name = f"demo-node-{index + 1}"
+        client_port = self.base_client_port + index
+        cluster_port = self.base_cluster_port + index
+        monitor_port = self.base_monitor_port + index
+        store_path = (self.store_dir / node_name).as_posix()
+        routes = [
+            f'        "nats://127.0.0.1:{self.base_cluster_port + route}"'
+            for route in range(self.replicas)
+            if route != index
+        ]
+        routes_block = "\n".join(routes)
+        if routes_block:
+            routes_block = "\n" + routes_block + "\n    "
+        return dedent(
+            f"""
+            server_name: "{node_name}"
+            port: {client_port}
+            http: {monitor_port}
+            jetstream: {{
+              store_dir: "{store_path}"
+            }}
+            cluster {{
+              name: "demo"
+              listen: "127.0.0.1:{cluster_port}"
+              routes = [{routes_block}]
+            }}
+            """
+        ).strip()
+
+    def start(self) -> None:
+        for index in range(self.replicas):
+            config_path = self.config_dir / f"node_{index + 1}.conf"
+            config_path.write_text(self._config_text(index))
+            log_path = self.logs_dir / f"node_{index + 1}.log"
+            log_handle = log_path.open("w")
+            process = subprocess.Popen(
+                ["nats-server", "-c", str(config_path)],
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self._processes.append(process)
+            self._log_handles.append(log_handle)
+        print(f"Started JetStream cluster with {self.replicas} nodes. Logs at {self.logs_dir}")
+
+    def stop(self) -> None:
+        for process in self._processes:
+            if process.poll() is None:
+                process.terminate()
+        for process in self._processes:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        for handle in self._log_handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        self._processes.clear()
+        self._log_handles.clear()
+        if self._temp_dir_obj is not None:
+            self._temp_dir_obj.cleanup()
+
+def build_background_thread(name: str, target, *, args: tuple = ()) -> threading.Thread:
+    thread = threading.Thread(name=name, target=target, args=args, daemon=True)
+    thread.start()
+    return thread
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    args = parse_args(list(argv) if argv is not None else None)
+    ensure_python_version()
+    ensure_command("nats-server", apt_package="nats-server")
+    requirements_path = PROJECT_ROOT / "requirements.txt"
+    if requirements_path.exists():
+        ensure_python_dependencies(requirements_path)
+    else:
+        print("requirements.txt not found; skipping Python dependency check.")
+
+    # Ensure Qt operates in headless environments.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from nats.aio.client import Client as NATS
+    from nats.errors import ErrNoServers, TimeoutError
+    from nats.js.errors import NotFoundError
+    from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
+    from tspi_kit.producer import TSPIProducer
+    from tspi_kit.receiver import TSPIReceiver
+    from tspi_kit.ui.player import HeadlessPlayerRunner, ensure_offscreen
+
+    ensure_offscreen(True)
+
+    class JetStreamPublisherAdapter:
+        def __init__(self, loop: asyncio.AbstractEventLoop, js_context) -> None:
+            self._loop = loop
+            self._js = js_context
+
+        def publish(self, subject: str, payload: bytes, *, headers=None, timestamp=None) -> bool:
+            future = asyncio.run_coroutine_threadsafe(
+                self._js.publish(subject, payload, headers=headers), self._loop
+            )
+            try:
+                future.result(timeout=5)
+                return True
+            except Exception as exc:  # pragma: no cover - diagnostics
+                print(f"[publisher] failed to publish message: {exc}", file=sys.stderr)
+                return False
+
+    class JetStreamConsumerAdapter:
+        def __init__(self, loop: asyncio.AbstractEventLoop, subscription) -> None:
+            self._loop = loop
+            self._subscription = subscription
+
+        def pull(self, batch: int) -> List[object]:
+            future = asyncio.run_coroutine_threadsafe(
+                self._subscription.fetch(batch, timeout=1), self._loop
+            )
+            try:
+                messages = future.result(timeout=5)
+            except TimeoutError:
+                return []
+            except Exception as exc:  # pragma: no cover - diagnostics
+                print(f"[consumer] fetch failed: {exc}", file=sys.stderr)
+                return []
+            results = []
+            for message in messages:
+                results.append(types.SimpleNamespace(data=message.data))
+                ack_future = asyncio.run_coroutine_threadsafe(message.ack(), self._loop)
+                try:
+                    ack_future.result(timeout=5)
+                except Exception as exc:  # pragma: no cover - diagnostics
+                    print(f"[consumer] ack failed: {exc}", file=sys.stderr)
+            return results
+
+        def pending(self) -> int:
+            future = asyncio.run_coroutine_threadsafe(
+                self._subscription.consumer_info(), self._loop
+            )
+            try:
+                info = future.result(timeout=5)
+                return getattr(info, "num_pending", 0)
+            except Exception:
+                return 0
+
+    async def connect_to_cluster(servers: List[str]) -> NATS:
+        deadline = time.monotonic() + 60.0
+        attempt = 0
+        while True:
+            attempt += 1
+            nc = NATS()
+            try:
+                await nc.connect(
+                    servers=servers,
+                    connect_timeout=2,
+                    max_reconnect_attempts=-1,
+                    reconnect_time_wait=0.5,
+                )
+                print(f"Connected to JetStream cluster on attempt {attempt}.")
+                return nc
+            except ErrNoServers:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for JetStream cluster to become ready.")
+                await asyncio.sleep(1.0)
+
+    async def prepare_stream(js, replicas: int) -> None:
+        stream_name = "TSPI"
+        subjects = ["tspi.>"]
+        try:
+            await js.stream_info(stream_name)
+            await js.update_stream({"name": stream_name, "subjects": subjects, "num_replicas": replicas})
+        except NotFoundError:
+            await js.add_stream(
+                name=stream_name,
+                subjects=subjects,
+                num_replicas=replicas,
+                retention="limits",
+                max_msgs=-1,
+                max_bytes=-1,
+            )
+        for durable in ("demo-player", "demo-receiver"):
+            try:
+                await js.delete_consumer(stream_name, durable)
+            except NotFoundError:
+                continue
+
+    async def run_async() -> None:
+        cluster = JetStreamClusterManager(log_dir=args.log_dir)
+        simulator_thread: threading.Thread | None = None
+        receiver_thread: threading.Thread | None = None
+        player_thread: threading.Thread | None = None
+        stop_event = threading.Event()
+        shutdown_event = asyncio.Event()
+        try:
+            cluster.start()
+            loop = asyncio.get_running_loop()
+            nc: NATS | None = None
+            try:
+                nc = await connect_to_cluster(cluster.client_urls)
+                js = nc.jetstream()
+                await prepare_stream(js, cluster.replicas)
+
+                publisher = JetStreamPublisherAdapter(loop, js)
+                player_subscription = await js.pull_subscribe("tspi.>", durable="demo-player", stream="TSPI")
+                receiver_subscription = await js.pull_subscribe("tspi.>", durable="demo-receiver", stream="TSPI")
+                player_consumer = JetStreamConsumerAdapter(loop, player_subscription)
+                receiver_consumer = JetStreamConsumerAdapter(loop, receiver_subscription)
+
+                producer = TSPIProducer(publisher)
+                flight_config = FlightConfig(count=args.count, rate_hz=args.rate)
+                generator = TSPIFlightGenerator(flight_config)
+                log_receiver = TSPIReceiver(receiver_consumer, validate=False)
+                player_receiver = TSPIReceiver(player_consumer)
+                player_runner = HeadlessPlayerRunner(
+                    player_receiver,
+                    stdout_json=True,
+                    duration=args.duration,
+                    exit_on_idle=1.0,
+                )
+
+                def simulator_loop() -> None:
+                    chunk_seconds = 1.0
+                    try:
+                        while not stop_event.is_set():
+                            generator.stream_to_producer(producer, duration_seconds=chunk_seconds)
+                            time.sleep(chunk_seconds)
+                    except Exception as exc:  # pragma: no cover - diagnostics
+                        print(f"[simulator] error: {exc}", file=sys.stderr)
+
+                def receiver_loop() -> None:
+                    try:
+                        while not stop_event.is_set():
+                            messages = log_receiver.fetch(batch=50)
+                            if messages:
+                                latest = messages[-1]
+                                sensor = latest.get("sensor_id")
+                                print(
+                                    f"[receiver] consumed {len(messages)} frames (sensor {sensor})",
+                                    flush=True,
+                                )
+                            else:
+                                time.sleep(0.5)
+                    except Exception as exc:  # pragma: no cover - diagnostics
+                        print(f"[receiver] error: {exc}", file=sys.stderr)
+
+                def player_loop() -> None:
+                    try:
+                        player_runner.run()
+                    except Exception as exc:  # pragma: no cover - diagnostics
+                        print(f"[player] error: {exc}", file=sys.stderr)
+
+                simulator_thread = build_background_thread("demo-simulator", simulator_loop)
+                receiver_thread = build_background_thread("demo-receiver", receiver_loop)
+                player_thread = build_background_thread("demo-player", player_loop)
+
+                def request_shutdown() -> None:
+                    if not shutdown_event.is_set():
+                        print("Shutdown requested. Cleaning up...", flush=True)
+                        stop_event.set()
+                        shutdown_event.set()
+
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        loop.add_signal_handler(sig, request_shutdown)
+                    except NotImplementedError:  # pragma: no cover - fallback for non-UNIX
+                        signal.signal(sig, lambda _sig, _frame: request_shutdown())
+
+                if args.duration is not None:
+                    async def auto_stop() -> None:
+                        await asyncio.sleep(max(0.1, args.duration))
+                        request_shutdown()
+
+                    loop.create_task(auto_stop())
+
+                print("Demo environment is running. Press Ctrl+C to stop.")
+                await shutdown_event.wait()
+            finally:
+                stop_event.set()
+                for thread in (simulator_thread, receiver_thread, player_thread):
+                    if thread is not None:
+                        thread.join(timeout=5)
+                if nc is not None:
+                    try:
+                        await nc.drain()
+                    finally:
+                        await nc.close()
+        finally:
+            cluster.stop()
+
+    try:
+        asyncio.run(run_async())
+    except KeyboardInterrupt:
+        return 1
+    except Exception as exc:
+        print(f"Demo failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
