@@ -5,24 +5,22 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 ## Features
 - **Producer** – UDP listener that parses TSPI datagrams, adds receive timestamps, and publishes CBOR payloads to JetStream with deduplication headers.
 - **Receiver** – Durable JetStream consumer that decodes CBOR, validates against the Draft 2020-12 schema, and emits JSON lines or logs.
-- **JetStream Player** – Qt5 application (GUI/headless) with rate control, seek scaffolding, metrics reporting, and room-based playout subjects.
+- **JetStream Player** – Qt5 application (GUI/headless) with rate control, seek scaffolding, metrics reporting, and room-based playout subjects backed by smoothed map previews.
 - **PCAP Player** – Replays 37-byte TSPI frames from pcap/pcapng files into the UDP producer with adjustable rate, loop, and headless metrics.
-- **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates.
+- **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
 
 ## Getting Started
 ### Prerequisites
 - Python 3.11+
 - NATS JetStream cluster (e.g. `nats-server --jetstream`)
-- Optional GUI tooling: install with the `ui` extra for PyQt5 and qasync support
+- PyQt5 (for GUI usage)
 
 ### Installation
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .[test]
-# For GUI components
-pip install -e .[ui]
+pip install -r requirements.txt
 ```
 
 ### Quick Start
@@ -42,6 +40,21 @@ pip install -e .[ui]
    ```bash
    python player_qt.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
    ```
+
+### Turnkey Demo
+For a self-contained in-memory demonstration that spins up the synthetic flight generator, a three-node JetStream simulation, the headless player, and a monitoring receiver, run:
+
+```bash
+./demo
+```
+
+Pass a custom duration in seconds (default 6) as the first argument to control how long the generator runs:
+
+```bash
+./demo 10
+```
+
+The script will check for required Python packages, attempt to install any that are missing, simulate a leader failover within the JetStream cluster, and print JSON metrics from both the player and receiver.
 
 ## Components
 ### producer.py
@@ -81,7 +94,7 @@ The Draft 2020-12 schema in `tspi.schema.json` enforces shared fields (`type`, `
 ```bash
 pytest
 ```
-Tests cover datagram parsing for both message types and schema validation. Add `pytest-qt` driven UI tests once GUI widgets are implemented.
+Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Qt5 GUI/headless behaviour. Run `pytest -k ui` to focus on interface validation driven by `pytest-qt`.
 
 ## Offline Maps
 Map previews currently use placeholder widgets. Final integration will use PyQtWebEngine/OSM tiles with configurable smoothing (`--smooth-center`, `--smooth-zoom`, `--window-sec`) exposed via shared UI configuration (`tspi_kit.ui.app.UiConfig`). Headless modes remain fully operational without map assets.
