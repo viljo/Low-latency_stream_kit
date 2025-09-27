@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Convenience script to showcase the TSPI toolkit in a self-contained demo."""
+from __future__ import annotations
+
+import importlib
+import json
+import subprocess
+import sys
+import threading
+import time
+from typing import Dict, Iterable, Tuple
+
+
+REQUIRED_PACKAGES: Dict[str, str] = {
+    "cbor2": "cbor2",
+    "jsonschema": "jsonschema",
+    "PyQt5": "PyQt5",
+    "dpkt": "dpkt",
+}
+
+OPTIONAL_PACKAGES: Dict[str, str] = {
+    "nats": "nats-py",
+}
+
+
+def _ensure_packages(packages: Dict[str, str]) -> Iterable[str]:
+    missing = []
+    for module_name, package_name in packages.items():
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            missing.append(package_name)
+    return missing
+
+
+def ensure_dependencies() -> None:
+    """Attempt to import runtime dependencies, installing any that are missing."""
+
+    missing = list(_ensure_packages(REQUIRED_PACKAGES))
+    optional_missing = list(_ensure_packages(OPTIONAL_PACKAGES))
+
+    if not missing and not optional_missing:
+        print("All dependencies satisfied.")
+        return
+
+    packages = missing + optional_missing
+    print("Installing missing packages:", ", ".join(packages))
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *packages])
+
+
+def _stream_generator(generator, config, producer, duration: float) -> None:
+    frames = int(duration * config.rate_hz)
+    start = time.time()
+    base_epoch = start
+    for datagram, offset in generator.generate(frames):
+        target = start + offset
+        now = time.time()
+        if target > now:
+            time.sleep(target - now)
+        producer.ingest(datagram, recv_time=base_epoch + offset)
+
+
+def _monitor_receiver(receiver, consumer, stop_event: threading.Event) -> None:
+    while not stop_event.is_set() or consumer.pending() > 0:
+        batch = receiver.fetch(batch=10)
+        if batch:
+            latest = batch[-1]
+            payload = latest.get("payload", {})
+            summary = {
+                "sensor": latest.get("sensor_id"),
+                "time_s": round(float(latest.get("time_s", 0.0)), 4),
+                "vx_mps": round(float(payload.get("vx_mps", 0.0)), 2),
+                "vy_mps": round(float(payload.get("vy_mps", 0.0)), 2),
+                "lag": consumer.pending(),
+            }
+            print("[receiver]", json.dumps(summary))
+        else:
+            time.sleep(0.1)
+    print("Receiver drained remaining messages.")
+
+
+def _simulate_failover(cluster, delay: float, done_event: threading.Event) -> None:
+    if delay <= 0:
+        return
+    time.sleep(delay)
+    cluster.kill_leader()
+    print(f"Simulated JetStream leader failover; new leader index={cluster.leader_index}")
+    done_event.wait()
+    cluster.revive_all()
+    print("JetStream cluster restored to nominal state.")
+
+
+def run_demo(duration: float = 6.0) -> None:
+    from tspi_kit import (
+        FlightConfig,
+        HeadlessPlayerRunner,
+        InMemoryJetStreamCluster,
+        TSPIFlightGenerator,
+        TSPIProducer,
+        TSPIReceiver,
+    )
+
+    cluster = InMemoryJetStreamCluster(replicas=3)
+    producer = TSPIProducer(cluster)
+
+    player_consumer = cluster.create_consumer("tspi.>")
+    player_receiver = TSPIReceiver(player_consumer)
+
+    monitor_consumer = cluster.create_consumer("tspi.>")
+    monitor_receiver = TSPIReceiver(monitor_consumer, validate=False)
+
+    config = FlightConfig(count=5, rate_hz=20.0)
+    generator = TSPIFlightGenerator(config)
+
+    generator_done = threading.Event()
+    player_done = threading.Event()
+
+    generator_thread = threading.Thread(
+        target=lambda: (
+            _stream_generator(generator, config, producer, duration),
+            generator_done.set(),
+        ),
+        name="generator",
+        daemon=True,
+    )
+
+    player_runner = HeadlessPlayerRunner(
+        player_receiver,
+        duration=duration + 2.0,
+        exit_on_idle=1.5,
+        stdout_json=True,
+    )
+    player_thread = threading.Thread(
+        target=lambda: (player_runner.run(), player_done.set()),
+        name="player",
+        daemon=True,
+    )
+
+    monitor_thread = threading.Thread(
+        target=_monitor_receiver,
+        args=(monitor_receiver, monitor_consumer, generator_done),
+        name="monitor",
+        daemon=True,
+    )
+
+    failover_thread = threading.Thread(
+        target=_simulate_failover,
+        args=(cluster, duration / 2.0, player_done),
+        name="failover",
+        daemon=True,
+    )
+
+    print("Starting TSPI simulation with HA JetStream cluster...")
+    generator_thread.start()
+    player_thread.start()
+    monitor_thread.start()
+    failover_thread.start()
+
+    try:
+        generator_thread.join()
+        player_thread.join()
+    except KeyboardInterrupt:
+        print("Interrupted, shutting down...")
+    finally:
+        generator_done.set()
+        player_done.set()
+
+    monitor_thread.join(timeout=1.0)
+    print("Demo complete.")
+
+
+def main(argv: Tuple[str, ...]) -> int:
+    ensure_dependencies()
+    duration = 6.0
+    if len(argv) > 1:
+        try:
+            duration = float(argv[1])
+        except ValueError:
+            print(f"Invalid duration '{argv[1]}', using default {duration} seconds.")
+    run_demo(duration)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(tuple(sys.argv)))

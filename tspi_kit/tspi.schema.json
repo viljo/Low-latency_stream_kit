@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/tspi.schema.json",
+  "title": "BAPS TSPI Payload",
+  "type": "object",
+  "required": [
+    "type",
+    "sensor_id",
+    "day",
+    "time_s",
+    "status",
+    "status_flags",
+    "payload",
+    "recv_epoch_ms",
+    "recv_iso"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["geocentric", "spherical"]
+    },
+    "sensor_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "day": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 366
+    },
+    "time_s": {
+      "type": "number",
+      "minimum": 0
+    },
+    "status": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "status_flags": {
+      "$ref": "#/definitions/statusFlags"
+    },
+    "recv_epoch_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "recv_iso": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {"const": "geocentric"}
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {"$ref": "#/definitions/geocentricPayload"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {"const": "spherical"}
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {"$ref": "#/definitions/sphericalPayload"}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "definitions": {
+    "statusFlags": {
+      "type": "object",
+      "required": [
+        "position_x_valid",
+        "position_y_valid",
+        "position_z_valid",
+        "velocity_x_valid",
+        "velocity_y_valid",
+        "velocity_z_valid",
+        "acceleration_x_valid",
+        "acceleration_y_valid",
+        "acceleration_z_valid"
+      ],
+      "properties": {
+        "position_x_valid": {"type": "boolean"},
+        "position_y_valid": {"type": "boolean"},
+        "position_z_valid": {"type": "boolean"},
+        "velocity_x_valid": {"type": "boolean"},
+        "velocity_y_valid": {"type": "boolean"},
+        "velocity_z_valid": {"type": "boolean"},
+        "acceleration_x_valid": {"type": "boolean"},
+        "acceleration_y_valid": {"type": "boolean"},
+        "acceleration_z_valid": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "geocentricPayload": {
+      "type": "object",
+      "required": [
+        "x_m",
+        "y_m",
+        "z_m",
+        "vx_mps",
+        "vy_mps",
+        "vz_mps",
+        "ax_mps2",
+        "ay_mps2",
+        "az_mps2"
+      ],
+      "properties": {
+        "x_m": {"type": "number"},
+        "y_m": {"type": "number"},
+        "z_m": {"type": "number"},
+        "vx_mps": {"type": "number"},
+        "vy_mps": {"type": "number"},
+        "vz_mps": {"type": "number"},
+        "ax_mps2": {"type": "number"},
+        "ay_mps2": {"type": "number"},
+        "az_mps2": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "sphericalPayload": {
+      "type": "object",
+      "required": [
+        "range_m",
+        "azimuth_deg",
+        "elevation_deg",
+        "azimuth_rate_dps",
+        "elevation_rate_dps",
+        "range_rate_mps",
+        "azimuth_accel_dps2",
+        "elevation_accel_dps2",
+        "range_accel_mps2"
+      ],
+      "properties": {
+        "range_m": {"type": "number"},
+        "azimuth_deg": {"type": "number"},
+        "elevation_deg": {"type": "number"},
+        "azimuth_rate_dps": {"type": "number"},
+        "elevation_rate_dps": {"type": "number"},
+        "range_rate_mps": {"type": "number"},
+        "azimuth_accel_dps2": {"type": "number"},
+        "elevation_accel_dps2": {"type": "number"},
+        "range_accel_mps2": {"type": "number"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
