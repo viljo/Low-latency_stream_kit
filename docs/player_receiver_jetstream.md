@@ -58,6 +58,7 @@
 * Features:
   * Source selector for Live (JetStream) vs Historical (Datastore via Replayer).
   * Timeline scrubber ("YouTube" style) maintains a rolling history window for rewind/playhead jumps.
+  * Headless mode offers JSON line streaming to integrate with log pipelines.
   * Commands apply immediately and cache global state.
   * Tags display new annotations and support "seek to tag" for replay.
   * On startup, query TimescaleDB for the latest command and recent tags.
