@@ -1,10 +1,11 @@
-"""Headless TSPI producer that publishes to an in-memory JetStream."""
+"""Headless TSPI producer that publishes to JetStream-compatible publishers."""
 from __future__ import annotations
 
+import asyncio
+import inspect
+import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
-
-import time
 
 import cbor2
 
@@ -44,5 +45,14 @@ class TSPIProducer:
         headers = message_headers(parsed)
 
         encoded = cbor2.dumps(payload)
-        self._publisher.publish(subject, encoded, headers=headers, timestamp=recv_time)
+        result = self._publisher.publish(
+            subject, encoded, headers=headers, timestamp=recv_time
+        )
+        if inspect.isawaitable(result):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(result)
+            else:
+                asyncio.ensure_future(result)
         return payload

@@ -32,11 +32,15 @@ pip install -r requirements.txt
    ```bash
    python producer.py --nats-server nats://127.0.0.1:4222
    ```
-3. **Generate synthetic traffic (headless)**
+3. **Start the receiver for metrics/logging**
+   ```bash
+   python receiver.py --nats-server nats://127.0.0.1:4222 --json
+   ```
+4. **Generate synthetic traffic (headless)**
    ```bash
    python tspi_generator_qt.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
    ```
-4. **Play back in headless mode**
+5. **Play back in headless mode**
    ```bash
    python player_qt.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
    ```
