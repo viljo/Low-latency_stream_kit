@@ -1,4 +1,4 @@
-"""Standalone UDP → JetStream TSPI producer."""
+"""Standalone TSPI-to-JetStream UDP producer."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,9 @@ from tspi_kit.udp_ingest import AsyncJetStreamPublisher, UDPIngestProtocol
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="UDP TSPI producer for JetStream")
+    parser = argparse.ArgumentParser(
+        description="UDP TSPI-to-JetStream producer CLI"
+    )
     parser.add_argument(
         "--udp-host",
         default="0.0.0.0",
