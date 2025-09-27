@@ -7,6 +7,7 @@ import sys
 from PyQt5 import QtWidgets
 
 from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
+from tspi_kit.jetstream_client import JetStreamThreadedClient
 from tspi_kit.producer import TSPIProducer
 from tspi_kit.ui import GeneratorController
 from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
@@ -18,20 +19,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--count", type=int, default=50)
     parser.add_argument("--rate", type=float, default=50.0)
     parser.add_argument("--duration", type=float, default=1.0)
+    parser.add_argument(
+        "--nats-server",
+        dest="nats_servers",
+        action="append",
+        help="NATS server URL to publish to (may be provided multiple times).",
+    )
+    parser.add_argument(
+        "--js-stream",
+        default="TSPI",
+        help="JetStream stream to create/use for telemetry publishing.",
+    )
+    parser.add_argument(
+        "--stream-prefix",
+        default="tspi",
+        help="Telemetry subject prefix when publishing to JetStream.",
+    )
+    parser.add_argument(
+        "--stream-replicas",
+        type=int,
+        default=None,
+        help="Number of JetStream replicas when creating the stream.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     ensure_offscreen(args.headless)
-    stream, _sources = connect_in_memory({"live": "tspi.>"})
-    producer = TSPIProducer(stream)
+    js_client: JetStreamThreadedClient | None = None
+
+    if args.nats_servers:
+        js_client = JetStreamThreadedClient(args.nats_servers)
+        js_client.start()
+        js_client.ensure_stream(args.js_stream, [f"{args.stream_prefix}.>"], num_replicas=args.stream_replicas)
+        publisher = js_client.publisher()
+    else:
+        stream, _sources = connect_in_memory({"live": "tspi.>"})
+        publisher = stream
+
+    producer = TSPIProducer(publisher, stream_prefix=args.stream_prefix)
     config = FlightConfig(count=args.count, rate_hz=args.rate)
     generator = TSPIFlightGenerator(config)
     controller = GeneratorController(generator, producer)
 
     if args.headless:
         controller.run(args.duration)
+        if js_client is not None:
+            js_client.close()
         return 0
 
     app = QtWidgets.QApplication(sys.argv)
@@ -43,7 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     window.show()
     controller.metrics_updated.connect(lambda payload: label.setText(payload))
     controller.run(args.duration)
-    return app.exec()
+    exit_code = app.exec()
+    if js_client is not None:
+        js_client.close()
+    return exit_code
 
 
 if __name__ == "__main__":  # pragma: no cover
