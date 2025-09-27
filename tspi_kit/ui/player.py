@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional
 
+from jsonschema import exceptions as jsonschema_exceptions
 from PyQt5 import QtCore, QtWidgets
 
 from ..jetstream_sim import InMemoryJetStream
@@ -48,6 +49,8 @@ class PlayerState(QtCore.QObject):
     """Controller shared between GUI and headless playback with source switching."""
 
     metrics_updated = QtCore.pyqtSignal(PlayerMetrics)
+    display_units_changed = QtCore.pyqtSignal(str)
+    marker_color_changed = QtCore.pyqtSignal(str)
 
     def __init__(
         self,
@@ -82,6 +85,10 @@ class PlayerState(QtCore.QObject):
         self._timer.timeout.connect(self._tick)
         self._clock_source = ui_config.default_clock
         self._rate = ui_config.default_rate
+        self._display_units = ui_config.default_units
+        self._marker_color = ui_config.default_marker_color
+        if self._map_widget:
+            self._map_widget.set_marker_color(self._marker_color)
 
     @staticmethod
     def _normalize_sources(
@@ -128,6 +135,14 @@ class PlayerState(QtCore.QObject):
     @property
     def available_sources(self) -> List[str]:
         return list(self._source_factories.keys())
+
+    @property
+    def display_units(self) -> str:
+        return self._display_units
+
+    @property
+    def marker_color(self) -> str:
+        return self._marker_color
 
     def set_rate(self, value: float) -> None:
         self._rate = max(self._ui_config.rate_min, min(self._ui_config.rate_max, value))
@@ -191,9 +206,17 @@ class PlayerState(QtCore.QObject):
         messages = self._receiver.fetch(batch=batch)
         if not messages:
             return
+        filtered: List[dict] = []
         for message in messages:
-            validate_payload(message)
-        self._timeline.extend(messages)
+            if isinstance(message, dict) and "cmd_id" not in message:
+                try:
+                    validate_payload(message)
+                except jsonschema_exceptions.ValidationError:
+                    continue
+            filtered.append(message)
+        if not filtered:
+            return
+        self._timeline.extend(filtered)
         if len(self._timeline) > self._history_limit:
             drop = len(self._timeline) - self._history_limit
             del self._timeline[:drop]
@@ -227,15 +250,47 @@ class PlayerState(QtCore.QObject):
         self._metrics.frames += 1
         self._metrics.position = self._position
         self._metrics.timeline = len(self._timeline)
+        self._handle_message(message)
+        self._emit_metrics()
+
+    def _handle_message(self, message: dict) -> None:
+        if not isinstance(message, dict):
+            return
+        if "cmd_id" in message:
+            self._handle_command(message)
+            return
+        self._handle_telemetry(message)
+
+    def _handle_command(self, message: dict) -> None:
+        payload = message.get("payload", {})
+        if not isinstance(payload, dict):
+            return
+        name = message.get("name")
+        if name == "display.units":
+            units = str(payload.get("units", "")).lower()
+            if units in {"metric", "imperial"} and units != self._display_units:
+                self._display_units = units
+                self.display_units_changed.emit(units)
+        elif name == "display.marker_color":
+            color = str(payload.get("marker_color", ""))
+            if color and color != self._marker_color:
+                self._marker_color = color
+                if self._map_widget:
+                    self._map_widget.set_marker_color(color)
+                self.marker_color_changed.emit(color)
+
+    def _handle_telemetry(self, message: dict) -> None:
         if self._map_widget:
             payload = message.get("payload", {})
-            center = (
-                float(payload.get("x_m", payload.get("range_m", 0.0))),
-                float(payload.get("y_m", payload.get("azimuth_deg", 0.0))),
-            )
-            zoom = 1.0 + abs(float(payload.get("vx_mps", payload.get("range_rate_mps", 0.0)))) * 0.01
-            self._map_widget.apply_position(center, zoom)
-        self._emit_metrics()
+            if isinstance(payload, dict):
+                center = (
+                    float(payload.get("x_m", payload.get("range_m", 0.0))),
+                    float(payload.get("y_m", payload.get("azimuth_deg", 0.0))),
+                )
+                zoom = 1.0 + abs(
+                    float(payload.get("vx_mps", payload.get("range_rate_mps", 0.0)))
+                ) * 0.01
+                self._map_widget.apply_position(center, zoom)
 
     def _emit_metrics(self, *, force: bool = False) -> None:
         now = time.monotonic()
@@ -293,6 +348,10 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         )
         self._scrubbing = False
         self._build_ui()
+        self._state.display_units_changed.connect(self._update_units)
+        self._state.marker_color_changed.connect(self._update_marker_color)
+        self._update_units(self._state.display_units)
+        self._update_marker_color(self._state.marker_color)
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget(self)
@@ -334,6 +393,13 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
 
         layout.addWidget(self._map)
 
+        status_layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(status_layout)
+        self._units_label = QtWidgets.QLabel("Units: metric", self)
+        status_layout.addWidget(self._units_label)
+        self._marker_label = QtWidgets.QLabel("Marker: #00ff00", self)
+        status_layout.addWidget(self._marker_label)
+
         self._scrub_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
         self._scrub_slider.setRange(0, 0)
         layout.addWidget(self._scrub_slider)
@@ -354,6 +420,12 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         if hasattr(sources, "items"):
             return sources  # type: ignore[return-value]
         raise TypeError("Unsupported sources object for JetStreamPlayerWindow")
+
+    def _update_units(self, units: str) -> None:
+        self._units_label.setText(f"Units: {units}")
+
+    def _update_marker_color(self, color: str) -> None:
+        self._marker_label.setText(f"Marker: {color}")
 
     def _toggle_play(self) -> None:
         if self._state.playing:

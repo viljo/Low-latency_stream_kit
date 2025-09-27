@@ -19,6 +19,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
+from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
 from tspi_kit.datastore import MessageRecord, TagRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -526,7 +527,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     async def prepare_stream(js, replicas: int) -> None:
         stream_name = "TSPI"
-        subjects = ["tspi.>"]
+        subjects = ["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"]
         try:
             await js.stream_info(stream_name)
             await js.update_stream({"name": stream_name, "subjects": subjects, "num_replicas": replicas})
@@ -550,6 +551,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         datastore_cluster: TimescaleHACluster | None = None
         archiver_task: asyncio.Task[None] | None = None
         generator_proc: subprocess.Popen[str] | None = None
+        command_proc: subprocess.Popen[str] | None = None
         player_proc: subprocess.Popen[str] | None = None
         stop_event = threading.Event()
         shutdown_event = asyncio.Event()
@@ -640,6 +642,19 @@ def main(argv: Iterable[str] | None = None) -> int:
                 for url in cluster.client_urls:
                     player_cmd.extend(["--nats-server", url])
 
+                command_cmd: List[str] = [
+                    sys.executable,
+                    str(PROJECT_ROOT / "tspi_command_qt.py"),
+                    "--sender-id",
+                    "demo-ui",
+                    "--js-stream",
+                    "TSPI",
+                    "--stream-prefix",
+                    "tspi",
+                ]
+                for url in cluster.client_urls:
+                    command_cmd.extend(["--nats-server", url])
+
                 try:
                     generator_proc = subprocess.Popen(generator_cmd, env=qt_env)
                     print(f"Launched generator UI: {shlex.join(generator_cmd)}", flush=True)
@@ -652,7 +667,18 @@ def main(argv: Iterable[str] | None = None) -> int:
                 except Exception as exc:
                     if generator_proc is not None and generator_proc.poll() is None:
                         generator_proc.terminate()
+                    if command_proc is not None and command_proc.poll() is None:
+                        command_proc.terminate()
                     raise RuntimeError(f"Failed to launch receiver UI: {exc}") from exc
+
+                try:
+                    command_proc = subprocess.Popen(command_cmd, env=qt_env)
+                    print(f"Launched command UI: {shlex.join(command_cmd)}", flush=True)
+                except Exception as exc:
+                    for proc in (player_proc, generator_proc):
+                        if proc is not None and proc.poll() is None:
+                            proc.terminate()
+                    raise RuntimeError(f"Failed to launch command UI: {exc}") from exc
 
                 async def monitor_process(name: str, proc: subprocess.Popen[str]) -> None:
                     await asyncio.to_thread(proc.wait)
@@ -662,6 +688,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
                 loop.create_task(monitor_process("Generator UI", generator_proc))
                 loop.create_task(monitor_process("Receiver UI", player_proc))
+                loop.create_task(monitor_process("Command UI", command_proc))
 
                 def request_shutdown() -> None:
                     if not shutdown_event.is_set():
@@ -686,7 +713,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 await shutdown_event.wait()
             finally:
                 stop_event.set()
-                for name, proc in (("generator UI", generator_proc), ("receiver UI", player_proc)):
+                for name, proc in (
+                    ("generator UI", generator_proc),
+                    ("receiver UI", player_proc),
+                    ("command UI", command_proc),
+                ):
                     if proc is None:
                         continue
                     if proc.poll() is None:

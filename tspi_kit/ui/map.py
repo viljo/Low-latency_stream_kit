@@ -48,22 +48,37 @@ class MapPreviewWidget(QtWidgets.QWidget):
     def __init__(self, smoother: MapSmoother, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._smoother = smoother
-        self._label = QtWidgets.QLabel("Map Preview", self)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self._label)
+        self._position_label = QtWidgets.QLabel("Map Preview", self)
+        layout.addWidget(self._position_label)
+        self._marker_color = "#00ff00"
+        self._marker_label = QtWidgets.QLabel("Marker: #00ff00", self)
+        layout.addWidget(self._marker_label)
         self._state = self._smoother.state
-        self._update_label()
+        self._update_position_label()
 
     @property
     def state(self) -> MapState:
         return self._state
 
+    @property
+    def marker_color(self) -> str:
+        return self._marker_color
+
     def apply_position(self, center: Tuple[float, float], zoom: float) -> MapState:
         self._state = self._smoother.update(center, zoom)
-        self._update_label()
+        self._update_position_label()
         self.state_changed.emit(self._state)
         return self._state
 
-    def _update_label(self) -> None:
+    def set_marker_color(self, color: str) -> None:
+        if not color:
+            return
+        self._marker_color = color
+        self._marker_label.setText(f"Marker: {color}")
+
+    def _update_position_label(self) -> None:
         center_x, center_y = self._state.center
-        self._label.setText(f"Center: {center_x:.2f}, {center_y:.2f} | Zoom: {self._state.zoom:.2f}")
+        self._position_label.setText(
+            f"Center: {center_x:.2f}, {center_y:.2f} | Zoom: {self._state.zoom:.2f}"
+        )

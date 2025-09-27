@@ -10,6 +10,7 @@ from .pcap import PCAPReplayer
 from .generator import FlightConfig, TSPIFlightGenerator
 from .datastore import TimescaleDatastore, MessageRecord, TagRecord
 from .archiver import Archiver
+from .commands import CommandSender, CommandPayload, COMMAND_SUBJECT_PREFIX
 from .replayer import StoreReplayer
 from .ui import (
     GeneratorController,
@@ -40,6 +41,9 @@ __all__ = [
     "MessageRecord",
     "TagRecord",
     "Archiver",
+    "CommandSender",
+    "CommandPayload",
+    "COMMAND_SUBJECT_PREFIX",
     "StoreReplayer",
     "UiConfig",
     "MapSmoother",

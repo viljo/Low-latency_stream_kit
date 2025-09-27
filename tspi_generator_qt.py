@@ -6,6 +6,7 @@ import sys
 
 from PyQt5 import QtCore, QtWidgets
 
+from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
 from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
 from tspi_kit.jetstream_client import JetStreamThreadedClient
 from tspi_kit.producer import TSPIProducer
@@ -58,7 +59,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.nats_servers:
         js_client = JetStreamThreadedClient(args.nats_servers)
         js_client.start()
-        js_client.ensure_stream(args.js_stream, [f"{args.stream_prefix}.>"], num_replicas=args.stream_replicas)
+        subjects = [
+            f"{args.stream_prefix}.>",
+            f"{COMMAND_SUBJECT_PREFIX}.>",
+            "tags.>",
+        ]
+        js_client.ensure_stream(args.js_stream, subjects, num_replicas=args.stream_replicas)
         publisher = js_client.publisher()
     else:
         stream, _sources = connect_in_memory({"live": "tspi.>"})

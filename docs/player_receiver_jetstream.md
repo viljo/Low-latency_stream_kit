@@ -25,13 +25,13 @@
 * Serves as the only integration point for TSPI telemetry, commands, and tags.
 * Key subjects:
   * `tspi.>` — live telemetry fan-out.
-  * `cmd.display.units` — global unit-change broadcasts.
+  * `tspi.cmd.display.>` — global display commands (units, marker color, ...).
   * `tags.create`, `tags.update`, `tags.delete`, `tags.broadcast` — collaborative annotations.
 * Provides HA (`replicas=3`), consumer groups, and a persistence window for replay.
 
 ### Archiver
 * Connects solely to JetStream.
-* Subscribes to `tspi.>`, `cmd.display.units`, and `tags.*`.
+* Subscribes to `tspi.>`, `tspi.cmd.display.>`, and `tags.*`.
 * Persists into TimescaleDB while deduplicating via the JetStream message id.
 
 ### TimescaleDB Datastore
@@ -51,17 +51,17 @@
 * Single GUI/headless application with live vs historical switching baked in.
 * Establish JetStream subscriptions directly (no Producer link).
 * Required subscriptions:
-  * `tspi.>` — live telemetry.
-  * `cmd.display.units` — global unit changes.
+  * `tspi.>` — live telemetry and associated command stream.
   * `tags.broadcast` — collaborative tags.
   * `player.<room>.playout` — historical playback from the Store Replayer.
 * Features:
   * Source selector for Live (JetStream) vs Historical (Datastore via Replayer).
   * Timeline scrubber ("YouTube" style) maintains a rolling history window for rewind/playhead jumps.
   * Headless mode offers JSON line streaming to integrate with log pipelines.
-  * Commands apply immediately and cache global state.
+  * Commands apply immediately and cache global state (units, marker color, ...).
   * Tags display new annotations and support "seek to tag" for replay.
-  * On startup, query TimescaleDB for the latest command and recent tags.
+* On startup, query TimescaleDB for the latest command and recent tags.
+* Command messages share the same JetStream stream as TSPI telemetry to guarantee that archival and replay reproduce the exact sequence of events.
   * Conversion for display only (DB remains SI units):
     * Altitude: metres ↔ feet.
     * Distance: metres/kilometres ↔ nautical miles.
