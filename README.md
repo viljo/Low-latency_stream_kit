@@ -4,8 +4,7 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 
 ## Features
 - **Producer** – UDP listener that parses TSPI datagrams, adds receive timestamps, and publishes CBOR payloads to JetStream with deduplication headers.
-- **Receiver** – Durable JetStream consumer that decodes CBOR, validates against the Draft 2020-12 schema, and emits JSON lines or logs.
-- **JetStream Player** – Unified Qt5 application (GUI/headless) with live ↔ historical source switching, timeline scrubbing, rate control, metrics, and smoothed map previews.
+- **Player/Receiver** – Single Qt5/CLI application that consumes JetStream telemetry, validates CBOR against the Draft 2020-12 schema, offers JSON/headless streaming, and provides live ↔ historical playback with timeline scrubbing, rate control, metrics, and smoothed map previews.
 - **PCAP Replayer** – Utility to ingest 37-byte TSPI captures and push them into the JetStream pipeline for offline testing.
 - **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
@@ -39,9 +38,9 @@ pip install -e .[ui]
    ```bash
    python tspi_generator_qt.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
    ```
-4. **Play back in headless mode**
+4. **Consume and play back telemetry**
    ```bash
-   python player_qt.py --headless --source live --nats-server nats://127.0.0.1:4222 --duration 10
+   python player_qt.py --headless --source live --nats-server nats://127.0.0.1:4222 --duration 10 --json-stream
    ```
 
 ## Components
@@ -53,14 +52,9 @@ pip install -e .[ui]
 - Options: sensor filters (`--sensor-id`), custom stream prefix, multiple NATS servers,
   publish timeout, log level
 
-### receiver.py
-- Durable consumer on `tspi.>`
-- Decodes CBOR to JSON, optional schema validation
-- Emits JSON lines by default (toggle with `--json-stream/--no-json-stream`)
-- Batch pull with back-off on idle
-
 ### player_qt.py
 - Unified GUI/headless JetStream receiver with live vs historical source selector
+- Optional JSON line output (`--json-stream/--no-json-stream`) for headless log pipelines
 - Timeline scrubber supports "YouTube-style" scrolling through buffered frames
 - Flags: `--headless`, `--source`, `--rate`, `--clock`, `--room`, `--metrics-interval`, `--exit-on-idle`
 
