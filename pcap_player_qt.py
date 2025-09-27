@@ -20,7 +20,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rate", type=float, default=1.0)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--metrics-interval", type=float, default=1.0)
-    parser.add_argument("--stdout-json", action="store_true", default=True)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--stdout-json",
+        dest="stdout_json",
+        action="store_true",
+        default=True,
+        help="Enable JSON metrics on stdout (default)",
+    )
+    group.add_argument(
+        "--no-stdout-json",
+        dest="stdout_json",
+        action="store_false",
+        help="Disable JSON metrics on stdout",
+    )
     return parser.parse_args(argv)
 
 
