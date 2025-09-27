@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.metadata
-import types
+import shlex
 import os
 import shutil
 import signal
@@ -14,9 +14,12 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from textwrap import dedent
-from typing import Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
+from tspi_kit.datastore import MessageRecord, TagRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 APT_UPDATED = False
@@ -212,11 +215,279 @@ class JetStreamClusterManager:
         if self._temp_dir_obj is not None:
             self._temp_dir_obj.cleanup()
 
-def build_background_thread(name: str, target, *, args: tuple = ()) -> threading.Thread:
-    thread = threading.Thread(name=name, target=target, args=args, daemon=True)
-    thread.start()
-    return thread
 
+class InMemoryTimescaleReplica:
+    """Simple in-memory backing store used to simulate a Timescale node."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._messages: List[MessageRecord] = []
+        self._commands: Dict[str, Dict[str, Any]] = {}
+        self._tags: Dict[str, TagRecord] = {}
+        self._lock = asyncio.Lock()
+
+    async def store_message(self, record: MessageRecord) -> None:
+        async with self._lock:
+            self._messages.append(record)
+
+    async def store_command(self, record: Dict[str, Any]) -> None:
+        cmd_id = record.get("cmd_id")
+        if not cmd_id:
+            return
+        async with self._lock:
+            self._commands[str(cmd_id)] = dict(record)
+
+    async def store_tag(self, record: TagRecord) -> None:
+        async with self._lock:
+            self._tags[record.id] = record
+
+    async def count_messages(self) -> int:
+        async with self._lock:
+            return len(self._messages)
+
+    async def count_commands(self) -> int:
+        async with self._lock:
+            return len(self._commands)
+
+    async def count_tags(self) -> int:
+        async with self._lock:
+            return len(self._tags)
+
+    async def close(self) -> None:
+        async with self._lock:
+            self._messages.clear()
+            self._commands.clear()
+            self._tags.clear()
+
+
+class TimescaleHACluster:
+    """In-memory HA simulation for the Timescale datastore."""
+
+    def __init__(self, replicas: int = 2) -> None:
+        if replicas < 1:
+            raise ValueError("At least one datastore replica is required")
+        self._replicas = [InMemoryTimescaleReplica(f"ha-node-{index + 1}") for index in range(replicas)]
+        self._messages: List[MessageRecord] = []
+        self._message_ids: Dict[str, int] = {}
+        self._commands: Dict[str, Dict[str, Any]] = {}
+        self._tags: Dict[str, TagRecord] = {}
+        self._next_id = 1
+        self._lock = asyncio.Lock()
+
+    @property
+    def replica_count(self) -> int:
+        return len(self._replicas)
+
+    def replica_names(self) -> List[str]:
+        return [replica.name for replica in self._replicas]
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        await asyncio.gather(*(replica.close() for replica in self._replicas))
+        async with self._lock:
+            self._messages.clear()
+            self._message_ids.clear()
+            self._commands.clear()
+            self._tags.clear()
+
+    async def insert_message(
+        self,
+        *,
+        subject: str,
+        kind: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, Any],
+        published_ts: datetime,
+        raw_cbor: bytes,
+    ) -> int | None:
+        headers_dict = {str(key): str(value) for key, value in headers.items()}
+        payload_dict = dict(payload)
+        message_key = headers_dict.get("Nats-Msg-Id")
+        async with self._lock:
+            if message_key and message_key in self._message_ids:
+                return None
+            record_id = self._next_id
+            self._next_id += 1
+            record = MessageRecord(
+                id=record_id,
+                subject=subject,
+                kind=kind,
+                published_ts=self._to_timestamp(published_ts),
+                headers=headers_dict,
+                payload=payload_dict,
+                cbor=bytes(raw_cbor),
+                recv_epoch_ms=self._coerce_optional_int(payload_dict.get("recv_epoch_ms")),
+                recv_iso=self._coerce_optional_iso(payload_dict.get("recv_iso")),
+                message_type=self._coerce_optional_str(payload_dict.get("type")),
+                sensor_id=self._coerce_optional_int(payload_dict.get("sensor_id")),
+                day=self._coerce_optional_int(payload_dict.get("day")),
+                time_s=self._coerce_optional_float(payload_dict.get("time_s")),
+            )
+            self._messages.append(record)
+            if message_key:
+                self._message_ids[message_key] = record_id
+        await asyncio.gather(*(replica.store_message(record) for replica in self._replicas))
+        return record_id
+
+    async def fetch_messages_between(self, start_ts: float, end_ts: float) -> Sequence[MessageRecord]:
+        async with self._lock:
+            return [
+                record
+                for record in self._messages
+                if start_ts <= record.published_ts <= end_ts
+            ]
+
+    async def fetch_messages_for_tag(self, tag_id: str, *, window_seconds: float = 10.0) -> Sequence[MessageRecord]:
+        tag = await self.get_tag(tag_id)
+        if tag is None:
+            return []
+        centre = self._to_datetime(tag.ts).timestamp()
+        half_window = window_seconds / 2.0
+        return await self.fetch_messages_between(centre - half_window, centre + half_window)
+
+    async def upsert_command(
+        self,
+        payload: Dict[str, Any],
+        *,
+        message_id: int,
+        published_ts: datetime,
+    ) -> None:
+        cmd_id = payload.get("cmd_id")
+        if not cmd_id:
+            return
+        enriched = dict(payload)
+        enriched.setdefault("message_id", message_id)
+        enriched.setdefault("published_ts", self._to_datetime(published_ts).isoformat())
+        key = str(cmd_id)
+        async with self._lock:
+            self._commands[key] = enriched
+        await asyncio.gather(*(replica.store_command(enriched) for replica in self._replicas))
+
+    async def latest_command(self, name: str) -> Dict[str, Any] | None:
+        async with self._lock:
+            candidates = [
+                dict(record)
+                for record in self._commands.values()
+                if str(record.get("name")) == name
+            ]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda record: record.get("published_ts", ""), reverse=True)[0]
+
+    async def apply_tag_event(
+        self,
+        subject: str,
+        payload: Dict[str, Any],
+        *,
+        message_id: int,
+    ) -> None:
+        tag_id = payload.get("id")
+        if not tag_id:
+            return
+        async with self._lock:
+            existing = self._tags.get(str(tag_id))
+            base = existing.__dict__ if existing else {}
+            ts_value = payload.get("ts", base.get("ts"))
+            updated_ts_value = payload.get("ts", base.get("updated_ts"))
+            status = payload.get("status")
+            if status is None:
+                if subject.endswith(".delete"):
+                    status = "deleted"
+                else:
+                    status = base.get("status", "active")
+            extra_payload = payload.get("extra", base.get("extra", {}))
+            if not isinstance(extra_payload, dict):
+                extra_payload = {}
+            record = TagRecord(
+                id=str(tag_id),
+                ts=self._coerce_iso(ts_value),
+                creator=self._coerce_optional_str(payload.get("creator", base.get("creator"))),
+                label=self._coerce_optional_str(payload.get("label", base.get("label"))),
+                category=self._coerce_optional_str(payload.get("category", base.get("category"))),
+                notes=self._coerce_optional_str(payload.get("notes", base.get("notes"))),
+                extra=dict(extra_payload),
+                status=str(status),
+                updated_ts=self._coerce_iso(updated_ts_value),
+            )
+            self._tags[record.id] = record
+        await asyncio.gather(*(replica.store_tag(record) for replica in self._replicas))
+
+    async def get_tag(self, tag_id: str) -> TagRecord | None:
+        async with self._lock:
+            return self._tags.get(tag_id)
+
+    async def count_messages(self) -> int:
+        async with self._lock:
+            return len(self._messages)
+
+    async def count_commands(self) -> int:
+        async with self._lock:
+            return len(self._commands)
+
+    async def count_tags(self) -> int:
+        async with self._lock:
+            return len(self._tags)
+
+    async def replica_message_counts(self) -> List[int]:
+        return [count for count in await asyncio.gather(*(replica.count_messages() for replica in self._replicas))]
+
+    async def replica_command_counts(self) -> List[int]:
+        return [count for count in await asyncio.gather(*(replica.count_commands() for replica in self._replicas))]
+
+    async def replica_tag_counts(self) -> List[int]:
+        return [count for count in await asyncio.gather(*(replica.count_tags() for replica in self._replicas))]
+
+    @staticmethod
+    def _to_datetime(value: datetime | float | int | str) -> datetime:
+        if isinstance(value, datetime):
+            return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        if isinstance(value, (float, int)):
+            return datetime.fromtimestamp(float(value), tz=UTC)
+        return datetime.fromisoformat(str(value)).astimezone(UTC)
+
+    @classmethod
+    def _to_timestamp(cls, value: datetime | float | int | str) -> float:
+        return cls._to_datetime(value).timestamp()
+
+    @classmethod
+    def _coerce_iso(cls, value: object | None) -> str:
+        if value is None:
+            return cls._to_datetime(datetime.now(tz=UTC)).isoformat()
+        if isinstance(value, datetime):
+            return cls._to_datetime(value).isoformat()
+        return str(value)
+
+    @classmethod
+    def _coerce_optional_iso(cls, value: object | None) -> str | None:
+        if value is None:
+            return None
+        return cls._coerce_iso(value)
+
+    @staticmethod
+    def _coerce_optional_str(value: object | None) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _coerce_optional_int(value: object | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_optional_float(value: object | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(list(argv) if argv is not None else None)
@@ -228,70 +499,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     else:
         print("requirements.txt not found; skipping Python dependency check.")
 
-    # Ensure Qt operates in headless environments.
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
     from nats.aio.client import Client as NATS
-    from nats.errors import ErrNoServers, TimeoutError
+    from nats.errors import ErrNoServers
     from nats.js.errors import NotFoundError
-    from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
-    from tspi_kit.producer import TSPIProducer
-    from tspi_kit.receiver import TSPIReceiver
-    from tspi_kit.ui.player import HeadlessPlayerRunner, ensure_offscreen
-
-    ensure_offscreen(True)
-
-    class JetStreamPublisherAdapter:
-        def __init__(self, loop: asyncio.AbstractEventLoop, js_context) -> None:
-            self._loop = loop
-            self._js = js_context
-
-        def publish(self, subject: str, payload: bytes, *, headers=None, timestamp=None) -> bool:
-            future = asyncio.run_coroutine_threadsafe(
-                self._js.publish(subject, payload, headers=headers), self._loop
-            )
-            try:
-                future.result(timeout=5)
-                return True
-            except Exception as exc:  # pragma: no cover - diagnostics
-                print(f"[publisher] failed to publish message: {exc}", file=sys.stderr)
-                return False
-
-    class JetStreamConsumerAdapter:
-        def __init__(self, loop: asyncio.AbstractEventLoop, subscription) -> None:
-            self._loop = loop
-            self._subscription = subscription
-
-        def pull(self, batch: int) -> List[object]:
-            future = asyncio.run_coroutine_threadsafe(
-                self._subscription.fetch(batch, timeout=1), self._loop
-            )
-            try:
-                messages = future.result(timeout=5)
-            except TimeoutError:
-                return []
-            except Exception as exc:  # pragma: no cover - diagnostics
-                print(f"[consumer] fetch failed: {exc}", file=sys.stderr)
-                return []
-            results = []
-            for message in messages:
-                results.append(types.SimpleNamespace(data=message.data))
-                ack_future = asyncio.run_coroutine_threadsafe(message.ack(), self._loop)
-                try:
-                    ack_future.result(timeout=5)
-                except Exception as exc:  # pragma: no cover - diagnostics
-                    print(f"[consumer] ack failed: {exc}", file=sys.stderr)
-            return results
-
-        def pending(self) -> int:
-            future = asyncio.run_coroutine_threadsafe(
-                self._subscription.consumer_info(), self._loop
-            )
-            try:
-                info = future.result(timeout=5)
-                return getattr(info, "num_pending", 0)
-            except Exception:
-                return 0
+    from tspi_kit.archiver import Archiver
 
     async def connect_to_cluster(servers: List[str]) -> NATS:
         deadline = time.monotonic() + 60.0
@@ -336,13 +547,20 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     async def run_async() -> None:
         cluster = JetStreamClusterManager(log_dir=args.log_dir)
-        simulator_thread: threading.Thread | None = None
-        receiver_thread: threading.Thread | None = None
-        player_thread: threading.Thread | None = None
+        datastore_cluster: TimescaleHACluster | None = None
+        archiver_task: asyncio.Task[None] | None = None
+        generator_proc: subprocess.Popen[str] | None = None
+        player_proc: subprocess.Popen[str] | None = None
         stop_event = threading.Event()
         shutdown_event = asyncio.Event()
         try:
             cluster.start()
+            datastore_cluster = TimescaleHACluster(replicas=2)
+            await datastore_cluster.connect()
+            replica_list = ", ".join(datastore_cluster.replica_names())
+            print(
+                f"Started HA datastore with {datastore_cluster.replica_count} nodes ({replica_list})."
+            )
             loop = asyncio.get_running_loop()
             nc: NATS | None = None
             try:
@@ -350,59 +568,100 @@ def main(argv: Iterable[str] | None = None) -> int:
                 js = nc.jetstream()
                 await prepare_stream(js, cluster.replicas)
 
-                publisher = JetStreamPublisherAdapter(loop, js)
-                player_subscription = await js.pull_subscribe("tspi.>", durable="demo-player", stream="TSPI")
-                receiver_subscription = await js.pull_subscribe("tspi.>", durable="demo-receiver", stream="TSPI")
-                player_consumer = JetStreamConsumerAdapter(loop, player_subscription)
-                receiver_consumer = JetStreamConsumerAdapter(loop, receiver_subscription)
+                if datastore_cluster is None:
+                    raise RuntimeError("Datastore cluster failed to initialise")
 
-                producer = TSPIProducer(publisher)
-                flight_config = FlightConfig(count=args.count, rate_hz=args.rate)
-                generator = TSPIFlightGenerator(flight_config)
-                log_receiver = TSPIReceiver(receiver_consumer, validate=False)
-                player_receiver = TSPIReceiver(player_consumer)
-                player_runner = HeadlessPlayerRunner(
-                    {"live": player_receiver},
-                    stdout_json=True,
-                    duration=args.duration,
-                    exit_on_idle=1.0,
-                    initial_source="live",
-                )
+                archiver = Archiver(js, datastore_cluster, durable_prefix="demo")
 
-                def simulator_loop() -> None:
-                    chunk_seconds = 1.0
+                async def archiver_worker() -> None:
                     try:
                         while not stop_event.is_set():
-                            generator.stream_to_producer(producer, duration_seconds=chunk_seconds)
-                            time.sleep(chunk_seconds)
-                    except Exception as exc:  # pragma: no cover - diagnostics
-                        print(f"[simulator] error: {exc}", file=sys.stderr)
-
-                def receiver_loop() -> None:
-                    try:
-                        while not stop_event.is_set():
-                            messages = log_receiver.fetch(batch=50)
-                            if messages:
-                                latest = messages[-1]
-                                sensor = latest.get("sensor_id")
+                            try:
+                                stored = await archiver.drain()
+                            except Exception as exc:  # pragma: no cover - diagnostics
+                                print(f"[datastore] archiver error: {exc}", file=sys.stderr)
+                                await asyncio.sleep(1.0)
+                                continue
+                            if stored:
+                                total = await datastore_cluster.count_messages()
+                                replica_totals = await datastore_cluster.replica_message_counts()
+                                replica_status = ", ".join(
+                                    f"{name}={count}"
+                                    for name, count in zip(
+                                        datastore_cluster.replica_names(), replica_totals
+                                    )
+                                )
                                 print(
-                                    f"[receiver] consumed {len(messages)} frames (sensor {sensor})",
+                                    f"[datastore] persisted {stored} message(s) (total {total}; {replica_status})",
                                     flush=True,
                                 )
                             else:
-                                time.sleep(0.5)
-                    except Exception as exc:  # pragma: no cover - diagnostics
-                        print(f"[receiver] error: {exc}", file=sys.stderr)
+                                await asyncio.sleep(0.5)
+                    except asyncio.CancelledError:  # pragma: no cover - cancellation handling
+                        raise
 
-                def player_loop() -> None:
-                    try:
-                        player_runner.run()
-                    except Exception as exc:  # pragma: no cover - diagnostics
-                        print(f"[player] error: {exc}", file=sys.stderr)
+                archiver_task = asyncio.create_task(archiver_worker())
 
-                simulator_thread = build_background_thread("demo-simulator", simulator_loop)
-                receiver_thread = build_background_thread("demo-receiver", receiver_loop)
-                player_thread = build_background_thread("demo-player", player_loop)
+                qt_env = os.environ.copy()
+                qt_env.pop("QT_QPA_PLATFORM", None)
+
+                generator_cmd: List[str] = [
+                    sys.executable,
+                    str(PROJECT_ROOT / "tspi_generator_qt.py"),
+                    "--count",
+                    str(args.count),
+                    "--rate",
+                    str(args.rate),
+                    "--duration",
+                    "1.0",
+                    "--continuous",
+                    "--js-stream",
+                    "TSPI",
+                    "--stream-prefix",
+                    "tspi",
+                ]
+                for url in cluster.client_urls:
+                    generator_cmd.extend(["--nats-server", url])
+
+                player_cmd: List[str] = [
+                    sys.executable,
+                    str(PROJECT_ROOT / "player_qt.py"),
+                    "--metrics-interval",
+                    "1.0",
+                    "--room",
+                    "demo",
+                    "--durable-prefix",
+                    "demo",
+                    "--js-stream",
+                    "TSPI",
+                    "--source",
+                    "live",
+                ]
+                for url in cluster.client_urls:
+                    player_cmd.extend(["--nats-server", url])
+
+                try:
+                    generator_proc = subprocess.Popen(generator_cmd, env=qt_env)
+                    print(f"Launched generator UI: {shlex.join(generator_cmd)}", flush=True)
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to launch generator UI: {exc}") from exc
+
+                try:
+                    player_proc = subprocess.Popen(player_cmd, env=qt_env)
+                    print(f"Launched receiver UI: {shlex.join(player_cmd)}", flush=True)
+                except Exception as exc:
+                    if generator_proc is not None and generator_proc.poll() is None:
+                        generator_proc.terminate()
+                    raise RuntimeError(f"Failed to launch receiver UI: {exc}") from exc
+
+                async def monitor_process(name: str, proc: subprocess.Popen[str]) -> None:
+                    await asyncio.to_thread(proc.wait)
+                    if not shutdown_event.is_set():
+                        print(f"{name} exited; shutting down demo.", flush=True)
+                        request_shutdown()
+
+                loop.create_task(monitor_process("Generator UI", generator_proc))
+                loop.create_task(monitor_process("Receiver UI", player_proc))
 
                 def request_shutdown() -> None:
                     if not shutdown_event.is_set():
@@ -427,9 +686,43 @@ def main(argv: Iterable[str] | None = None) -> int:
                 await shutdown_event.wait()
             finally:
                 stop_event.set()
-                for thread in (simulator_thread, receiver_thread, player_thread):
-                    if thread is not None:
-                        thread.join(timeout=5)
+                for name, proc in (("generator UI", generator_proc), ("receiver UI", player_proc)):
+                    if proc is None:
+                        continue
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            try:
+                                proc.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                pass
+                    exit_code = proc.returncode
+                    print(f"{name} exited with code {exit_code}.", flush=True)
+                if archiver_task is not None:
+                    archiver_task.cancel()
+                    try:
+                        await archiver_task
+                    except asyncio.CancelledError:  # pragma: no cover - expected on shutdown
+                        pass
+                if datastore_cluster is not None:
+                    total_messages = await datastore_cluster.count_messages()
+                    replica_totals = await datastore_cluster.replica_message_counts()
+                    replica_status = ", ".join(
+                        f"{name}={count}"
+                        for name, count in zip(datastore_cluster.replica_names(), replica_totals)
+                    )
+                    total_commands = await datastore_cluster.count_commands()
+                    total_tags = await datastore_cluster.count_tags()
+                    print(
+                        "Datastore summary: "
+                        f"{total_messages} message(s), {total_commands} command(s), {total_tags} tag(s) "
+                        f"across replicas ({replica_status}).",
+                        flush=True,
+                    )
+                    await datastore_cluster.close()
                 if nc is not None:
                     try:
                         await nc.drain()

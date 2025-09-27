@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
 from tspi_kit.jetstream_client import JetStreamThreadedClient
@@ -19,6 +19,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--count", type=int, default=50)
     parser.add_argument("--rate", type=float, default=50.0)
     parser.add_argument("--duration", type=float, default=1.0)
+    parser.add_argument(
+        "--continuous",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Continuously regenerate telemetry when running with the UI.",
+    )
     parser.add_argument(
         "--nats-server",
         dest="nats_servers",
@@ -77,7 +83,17 @@ def main(argv: list[str] | None = None) -> int:
     layout.addWidget(label)
     window.show()
     controller.metrics_updated.connect(lambda payload: label.setText(payload))
-    controller.run(args.duration)
+    run_once = lambda: controller.run(args.duration)
+    if args.continuous:
+        interval_ms = max(1, int(max(args.duration, 0.1) * 1000))
+        timer = QtCore.QTimer(window)
+        timer.setInterval(interval_ms)
+        timer.timeout.connect(run_once)
+        timer.start()
+        window._generator_timer = timer  # type: ignore[attr-defined]
+        QtCore.QTimer.singleShot(0, run_once)
+    else:
+        QtCore.QTimer.singleShot(0, run_once)
     exit_code = app.exec()
     if js_client is not None:
         js_client.close()
