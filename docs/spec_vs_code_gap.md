@@ -13,13 +13,13 @@ This document captures the current discrepancies between the published specifica
 - ✅ The player CLI builds durable JetStream consumers for live and historical subjects, allowing the GUI and headless runner to operate directly against external JetStream clusters. JSON streaming follows the README flag, and connections are closed cleanly when the application exits.【F:player_qt.py†L34-L98】
 
 ## Generator
-- ✅ The generator CLI can publish to JetStream by spinning up the same threaded client, optionally creating the telemetry stream before publishing. The legacy in-memory mode remains available for tests, but the README workflow using `--nats-server` now functions end to end.【F:tspi_generator_qt.py†L38-L88】
+- ✅ The generator CLI can publish to JetStream by spinning up the same threaded client, optionally creating the telemetry stream before publishing. The legacy in-memory mode remains available for tests, but the README workflow using `--nats-server` now functions end to end. UI sessions can automatically repeat via the `--continuous/--no-continuous` toggle consumed by the demo helper.【F:tspi_generator_qt.py†L38-L120】
 
 ## Persistence (Archiver, TimescaleDB, Replayer)
 - ✅ **Resolved:** The archiver consumes real JetStream pull subscriptions and persists into TimescaleDB via an asyncpg-backed client that mirrors the documented schema. Historical playback pulls the canonical records and republishes to `player.<room>.playout` with paced timing, matching the spec.【F:tspi_kit/archiver.py†L1-L94】【F:tspi_kit/datastore.py†L1-L227】【F:tspi_kit/replayer.py†L1-L88】
 
 ## Demo helper
-- ✅ The `./demo` helper now delivers the promised experience: it spins up a three-node JetStream cluster, bridges the generator and receivers through real JetStream pull consumers, and drives the headless player runner against that infrastructure.【F:README.md†L82-L95】【F:demo†L1-L220】
+- ✅ The `./demo` helper now delivers the promised experience: it spins up a three-node JetStream cluster, instantiates an in-memory two-node HA datastore for the archiver, launches the generator and unified receiver/player UIs against real JetStream traffic, and coordinates graceful shutdown alongside datastore persistence.【F:README.md†L82-L95】【F:demo†L1-L760】
 
 ## Summary
 The remaining toolkit components now align with the published README and JetStream integration specification. Producer, player, generator, and demo flows all operate against real JetStream clusters when requested while retaining in-memory shims for tests.【F:player_qt.py†L6-L106】【F:tspi_generator_qt.py†L6-L84】

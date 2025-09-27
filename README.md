@@ -63,6 +63,7 @@ pip install -e .[ui]
 - Styles: `normal` and `airshow`
 - Outputs UDP datagrams and/or publishes directly to JetStream (CBOR)
 - Headless metrics: frames generated, aircraft count, current rate
+- UI mode can continuously regenerate batches via `--continuous/--no-continuous`
 
 ## JSON Schema
 The Draft 2020-12 schema in `tspi.schema.json` enforces shared fields (`type`, `sensor_id`, `day`, `time_s`, `status`, `status_flags`) and payload-specific properties for geocentric and spherical telemetry. Validation is integrated into the receiver and exposed via `tspi_kit.schema.validate_payload`.
@@ -81,9 +82,10 @@ Apache License 2.0 — see `LICENSE`.
 
 ### Demo helper script
 The `./demo` helper orchestrates a full demonstration environment. It verifies system
-and Python dependencies, launches a three-node NATS JetStream cluster, starts the
-headless TSPI data generator, and streams data to both a receiver and the headless
-player. Run it from the repository root:
+and Python dependencies, launches a three-node NATS JetStream cluster, provisions an
+in-memory two-node Timescale datastore HA pair for the archiver, starts the TSPI data
+generator UI in continuous mode, and opens the unified receiver/player UI against
+that infrastructure. Run it from the repository root:
 
 ```bash
 ./demo
