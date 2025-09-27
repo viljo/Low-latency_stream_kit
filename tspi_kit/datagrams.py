@@ -46,7 +46,8 @@ class ParsedTSPI:
     def deduplication_id(self) -> str:
         """Return a JetStream de-duplication identifier."""
 
-        return f"{self.sensor_id}:{self.day}:{self.time_ticks}"
+        time_s_value = format(self.time_s, ".4f")
+        return f"{self.sensor_id}:{self.day}:{time_s_value}"
 
 
 def _unpack_header(datagram: bytes) -> tuple[MessageType, int, int, int, int, int, int]:

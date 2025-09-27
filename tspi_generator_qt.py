@@ -24,7 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     ensure_offscreen(args.headless)
-    stream, _receiver = connect_in_memory()
+    stream, _sources = connect_in_memory({"live": "tspi.>"})
     producer = TSPIProducer(stream)
     config = FlightConfig(count=args.count, rate_hz=args.rate)
     generator = TSPIFlightGenerator(config)

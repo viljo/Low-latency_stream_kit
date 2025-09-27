@@ -3,7 +3,6 @@
 from .config import UiConfig
 from .map import MapSmoother, MapPreviewWidget
 from .player import JetStreamPlayerWindow, HeadlessPlayerRunner, PlayerState
-from .pcap_player import PCAPPlayerController
 from .generator import GeneratorController
 
 __all__ = [
@@ -13,6 +12,5 @@ __all__ = [
     "JetStreamPlayerWindow",
     "HeadlessPlayerRunner",
     "PlayerState",
-    "PCAPPlayerController",
     "GeneratorController",
 ]
