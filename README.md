@@ -5,9 +5,9 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 ## Features
 - **Producer** – UDP listener that parses TSPI datagrams, adds receive timestamps, and publishes CBOR payloads to JetStream with deduplication headers.
 - **Receiver** – Durable JetStream consumer that decodes CBOR, validates against the Draft 2020-12 schema, and emits JSON lines or logs.
-- **JetStream Player** – Qt5 application (GUI/headless) with rate control, seek scaffolding, metrics reporting, and room-based playout subjects.
+- **JetStream Player** – Qt5 application (GUI/headless) with rate control, seek scaffolding, metrics reporting, and room-based playout subjects backed by smoothed map previews.
 - **PCAP Player** – Replays 37-byte TSPI frames from pcap/pcapng files into the UDP producer with adjustable rate, loop, and headless metrics.
-- **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates.
+- **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
 
 ## Getting Started
@@ -81,7 +81,7 @@ The Draft 2020-12 schema in `tspi.schema.json` enforces shared fields (`type`, `
 ```bash
 pytest
 ```
-Tests cover datagram parsing for both message types and schema validation. Add `pytest-qt` driven UI tests once GUI widgets are implemented.
+Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Qt5 GUI/headless behaviour. Run `pytest -k ui` to focus on interface validation driven by `pytest-qt`.
 
 ## Offline Maps
 Map previews currently use placeholder widgets. Final integration will use PyQtWebEngine/OSM tiles with configurable smoothing (`--smooth-center`, `--smooth-zoom`, `--window-sec`) exposed via shared UI configuration (`tspi_kit.ui.app.UiConfig`). Headless modes remain fully operational without map assets.

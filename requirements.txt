@@ -52,3 +52,5 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.1
     # via pydantic
+PyQt5==5.15.11
+pytest-qt==4.4.0
