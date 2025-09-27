@@ -7,6 +7,8 @@ from pathlib import Path
 
 from PyQt5 import QtWidgets
 
+from tspi_kit.jetstream_client import JetStreamThreadedClient
+from tspi_kit.receiver import TSPIReceiver
 from tspi_kit.ui import HeadlessPlayerRunner, JetStreamPlayerWindow, UiConfig
 from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
 
@@ -17,12 +19,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--metrics-interval", type=float, default=1.0)
     parser.add_argument("--duration", type=float)
     parser.add_argument("--exit-on-idle", type=float)
-    parser.add_argument("--stdout-json", action="store_true", default=True)
+    parser.add_argument(
+        "--json-stream",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit player metrics as JSON lines when running headless.",
+    )
     parser.add_argument("--write-cbor", type=Path)
     parser.add_argument("--rate", type=float, default=1.0)
     parser.add_argument("--room", type=str, default="default")
     parser.add_argument("--clock", choices=["receive", "tspi"], default="receive")
     parser.add_argument("--source", choices=["live", "historical"], default="live")
+    parser.add_argument(
+        "--nats-server",
+        dest="nats_servers",
+        action="append",
+        help="NATS server URL (may be provided multiple times).",
+    )
+    parser.add_argument(
+        "--js-stream",
+        default="TSPI",
+        help="Name of the JetStream stream that stores live telemetry.",
+    )
+    parser.add_argument(
+        "--historical-stream",
+        default=None,
+        help="JetStream stream providing historical playback (defaults to auto-discovery).",
+    )
+    parser.add_argument(
+        "--durable-prefix",
+        default="player-cli",
+        help="Prefix for JetStream durable consumer names.",
+    )
     return parser.parse_args(argv)
 
 
@@ -34,22 +62,45 @@ def main(argv: list[str] | None = None) -> int:
         "live": "tspi.>",
         "historical": f"player.{args.room}.playout.>",
     }
-    stream, sources = connect_in_memory(subject_map)
+    js_client: JetStreamThreadedClient | None = None
+    cleanup_required = False
+
+    if args.nats_servers:
+        js_client = JetStreamThreadedClient(args.nats_servers)
+        js_client.start()
+        receivers = {}
+        for name, subject in subject_map.items():
+            durable = f"{args.durable_prefix}-{name}"
+            stream_name = args.js_stream if name == "live" else args.historical_stream
+            consumer = js_client.create_pull_consumer(subject, durable=durable, stream=stream_name)
+            receivers[name] = TSPIReceiver(consumer)
+        sources = receivers
+        cleanup_required = True
+    else:
+        stream, sources = connect_in_memory(subject_map)
+
+    def _close_client() -> None:
+        if js_client is not None:
+            js_client.close()
 
     if args.headless:
         runner = HeadlessPlayerRunner(
             sources,
             ui_config=config,
-            stdout_json=args.stdout_json,
+            stdout_json=args.json_stream,
             duration=args.duration,
             exit_on_idle=args.exit_on_idle,
             write_cbor_dir=args.write_cbor,
             initial_source=args.source,
         )
         runner.run()
+        if cleanup_required:
+            _close_client()
         return 0
 
     app = QtWidgets.QApplication(sys.argv)
+    if cleanup_required:
+        app.aboutToQuit.connect(_close_client)
     window = JetStreamPlayerWindow(sources, ui_config=config, initial_source=args.source)
     window.show()
     return app.exec()
