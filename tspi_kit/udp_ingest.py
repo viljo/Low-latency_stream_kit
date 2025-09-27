@@ -1,4 +1,4 @@
-"""Async UDP ingestion helpers for the standalone TSPI producer."""
+"""Async UDP ingestion helpers for the standalone TSPI to JetStream producer."""
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +8,7 @@ from typing import Optional
 
 
 class UDPIngestProtocol(asyncio.DatagramProtocol):
-    """Receive UDP datagrams and hand them to a TSPI producer."""
+    """Receive UDP datagrams and hand them to a TSPI to JetStream producer."""
 
     def __init__(self, producer, *, loop: Optional[asyncio.AbstractEventLoop] = None, logger=None) -> None:
         self._producer = producer
