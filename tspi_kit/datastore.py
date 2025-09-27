@@ -1,27 +1,36 @@
-"""TimescaleDB-inspired datastore implementation for archiving JetStream traffic."""
+"""TimescaleDB persistence layer for the JetStream archiver."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
-import sqlite3
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Dict, Optional, Sequence
+
+try:  # pragma: no cover - optional dependency resolution
+    import asyncpg
+except ModuleNotFoundError:  # pragma: no cover - deferred error until connect()
+    asyncpg = None  # type: ignore[assignment]
 
 
-def _utc_timestamp(value: float | int | str | datetime) -> float:
-    """Return a UNIX timestamp in seconds for the given value."""
+def _to_datetime(value: float | int | str | datetime) -> datetime:
+    """Normalise timestamps into timezone-aware ``datetime`` objects."""
 
     if isinstance(value, datetime):
-        return value.timestamp()
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     if isinstance(value, (float, int)):
-        return float(value)
-    # Assume ISO formatted string.
-    return datetime.fromisoformat(value).timestamp()
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    return datetime.fromisoformat(str(value)).astimezone(UTC)
 
 
-@dataclass(frozen=True)
+def _to_timestamp(value: datetime | float | int | str | None) -> Optional[float]:
+    if value is None:
+        return None
+    return _to_datetime(value).timestamp()
+
+
+@dataclass(slots=True, frozen=True)
 class MessageRecord:
-    """Structured representation of a stored JetStream message."""
+    """Structured representation of a TimescaleDB message row."""
 
     id: int
     subject: str
@@ -38,9 +47,9 @@ class MessageRecord:
     time_s: Optional[float]
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True, frozen=True)
 class TagRecord:
-    """Structured representation of a persisted tag."""
+    """Structured representation of a TimescaleDB tag row."""
 
     id: str
     ts: str
@@ -54,101 +63,111 @@ class TagRecord:
 
 
 class TimescaleDatastore:
-    """Simple SQLite-backed datastore emulating TimescaleDB semantics."""
+    """Async TimescaleDB client used by the archiver and replayer."""
 
-    def __init__(self, *, path: str | None = None) -> None:
-        self._conn = sqlite3.connect(path or ":memory:")
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._initialise_schema()
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        schema: str = "public",
+        min_size: int = 1,
+        max_size: int = 10,
+    ) -> None:
+        self._dsn = dsn
+        self._schema = schema
+        self._pool: asyncpg.Pool | None = None
+        self._pool_settings = {"min_size": min_size, "max_size": max_size}
 
-    def close(self) -> None:
-        self._conn.close()
+    async def connect(self) -> None:
+        """Initialise the connection pool and ensure the schema exists."""
 
-    def _initialise_schema(self) -> None:
-        cursor = self._conn.cursor()
-        cursor.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                nats_msg_id TEXT,
-                published_ts REAL NOT NULL,
-                recv_epoch_ms INTEGER,
-                recv_iso TEXT,
-                message_type TEXT,
-                sensor_id INTEGER,
-                day INTEGER,
-                time_s REAL,
-                payload_json TEXT NOT NULL,
-                headers_json TEXT NOT NULL,
-                tspi_extracts_json TEXT,
-                cbor BLOB NOT NULL,
-                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
-                UNIQUE(nats_msg_id)
-            );
+        if self._pool is not None:
+            return
+        if asyncpg is None:  # pragma: no cover - handled at runtime
+            raise ModuleNotFoundError(
+                "asyncpg is required to use TimescaleDatastore"
+            ) from None
+        self._pool = await asyncpg.create_pool(self._dsn, **self._pool_settings)
+        async with self._pool.acquire() as conn:
+            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {self._schema}")
+            await conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._schema}.messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    nats_msg_id TEXT UNIQUE,
+                    published_ts TIMESTAMPTZ NOT NULL,
+                    recv_epoch_ms BIGINT,
+                    recv_iso TIMESTAMPTZ,
+                    message_type TEXT,
+                    sensor_id INTEGER,
+                    day INTEGER,
+                    time_s DOUBLE PRECISION,
+                    payload_json JSONB NOT NULL,
+                    headers_json JSONB NOT NULL,
+                    tspi_extracts_json JSONB,
+                    cbor BYTEA NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
 
-            CREATE TABLE IF NOT EXISTS commands (
-                cmd_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                ts TEXT NOT NULL,
-                sender TEXT,
-                units TEXT,
-                payload_json TEXT NOT NULL,
-                published_ts REAL NOT NULL,
-                message_id INTEGER NOT NULL,
-                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
-                FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
-            );
+                CREATE TABLE IF NOT EXISTS {self._schema}.commands (
+                    cmd_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    ts TIMESTAMPTZ NOT NULL,
+                    sender TEXT,
+                    units TEXT,
+                    payload_json JSONB NOT NULL,
+                    published_ts TIMESTAMPTZ NOT NULL,
+                    message_id BIGINT NOT NULL REFERENCES {self._schema}.messages(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
 
-            CREATE TABLE IF NOT EXISTS tags (
-                id TEXT PRIMARY KEY,
-                ts TEXT NOT NULL,
-                creator TEXT,
-                label TEXT,
-                category TEXT,
-                notes TEXT,
-                extra_json TEXT NOT NULL,
-                status TEXT NOT NULL,
-                updated_ts TEXT NOT NULL,
-                message_id INTEGER,
-                FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE SET NULL
-            );
-            """
-        )
-        cursor.close()
-        self._conn.commit()
+                CREATE TABLE IF NOT EXISTS {self._schema}.tags (
+                    id TEXT PRIMARY KEY,
+                    ts TIMESTAMPTZ NOT NULL,
+                    creator TEXT,
+                    label TEXT,
+                    category TEXT,
+                    notes TEXT,
+                    extra_json JSONB NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_ts TIMESTAMPTZ NOT NULL,
+                    message_id BIGINT REFERENCES {self._schema}.messages(id) ON DELETE SET NULL
+                );
+                """
+            )
+
+    async def close(self) -> None:
+        if self._pool is None:
+            return
+        await self._pool.close()
+        self._pool = None
 
     # ------------------------------------------------------------------
     # Message persistence
     # ------------------------------------------------------------------
-    def insert_message(
+    async def insert_message(
         self,
         *,
         subject: str,
         kind: str,
         payload: Dict[str, Any],
-        headers: Dict[str, str],
-        published_ts: float,
+        headers: Dict[str, Any],
+        published_ts: datetime | float | int | str,
         raw_cbor: bytes,
     ) -> Optional[int]:
-        """Insert a JetStream message and return its row id if stored."""
+        """Insert a JetStream message into TimescaleDB if not already stored."""
 
+        pool = self._require_pool()
         message_id = headers.get("Nats-Msg-Id")
         extracts = payload.get("payload") if isinstance(payload, dict) else None
-
-        recv_epoch_ms = payload.get("recv_epoch_ms") if isinstance(payload, dict) else None
         recv_iso = payload.get("recv_iso") if isinstance(payload, dict) else None
-        message_type = payload.get("type") if isinstance(payload, dict) else None
-        sensor_id = payload.get("sensor_id") if isinstance(payload, dict) else None
-        day = payload.get("day") if isinstance(payload, dict) else None
-        time_s = payload.get("time_s") if isinstance(payload, dict) else None
 
-        try:
-            cursor = self._conn.execute(
-                """
-                INSERT INTO messages (
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                INSERT INTO {self._schema}.messages (
                     subject,
                     kind,
                     nats_msg_id,
@@ -163,69 +182,68 @@ class TimescaleDatastore:
                     headers_json,
                     tspi_extracts_json,
                     cbor
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ON CONFLICT (nats_msg_id) DO NOTHING
+                RETURNING id
                 """,
-                (
-                    subject,
-                    kind,
-                    message_id,
-                    float(published_ts),
-                    recv_epoch_ms,
-                    recv_iso,
-                    message_type,
-                    sensor_id,
-                    day,
-                    time_s,
-                    json.dumps(payload, separators=(",", ":")),
-                    json.dumps(headers, separators=(",", ":")),
-                    json.dumps(extracts, separators=(",", ":")) if extracts else None,
-                    sqlite3.Binary(raw_cbor),
-                ),
+                subject,
+                kind,
+                message_id,
+                _to_datetime(published_ts),
+                payload.get("recv_epoch_ms") if isinstance(payload, dict) else None,
+                _to_datetime(recv_iso) if recv_iso else None,
+                payload.get("type") if isinstance(payload, dict) else None,
+                payload.get("sensor_id") if isinstance(payload, dict) else None,
+                payload.get("day") if isinstance(payload, dict) else None,
+                payload.get("time_s") if isinstance(payload, dict) else None,
+                json.dumps(payload, separators=(",", ":")),
+                json.dumps(dict(headers), separators=(",", ":")),
+                json.dumps(extracts, separators=(",", ":")) if extracts else None,
+                raw_cbor,
             )
-        except sqlite3.IntegrityError:
+        if row is None:
             return None
+        return int(row["id"])
 
-        self._conn.commit()
-        return int(cursor.lastrowid)
-
-    def fetch_messages_between(self, start_ts: float, end_ts: float) -> List[MessageRecord]:
-        cursor = self._conn.execute(
-            """
-            SELECT * FROM messages
-            WHERE published_ts BETWEEN ? AND ?
-            ORDER BY published_ts ASC, id ASC
-            """,
-            (float(start_ts), float(end_ts)),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
+    async def fetch_messages_between(
+        self, start_ts: float, end_ts: float
+    ) -> Sequence[MessageRecord]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM {self._schema}.messages
+                WHERE published_ts BETWEEN $1 AND $2
+                ORDER BY published_ts ASC, id ASC
+                """,
+                _to_datetime(start_ts),
+                _to_datetime(end_ts),
+            )
         return [self._message_from_row(row) for row in rows]
 
-    def fetch_messages_for_tag(
-        self,
-        tag_id: str,
-        *,
-        window_seconds: float = 10.0,
-    ) -> List[MessageRecord]:
-        tag = self.get_tag(tag_id)
+    async def fetch_messages_for_tag(
+        self, tag_id: str, *, window_seconds: float = 10.0
+    ) -> Sequence[MessageRecord]:
+        tag = await self.get_tag(tag_id)
         if tag is None:
             return []
-
-        centre = _utc_timestamp(tag.ts)
+        centre = _to_datetime(tag.ts).timestamp()
         half_window = window_seconds / 2.0
-        return self.fetch_messages_between(centre - half_window, centre + half_window)
+        return await self.fetch_messages_between(centre - half_window, centre + half_window)
 
-    def _message_from_row(self, row: sqlite3.Row) -> MessageRecord:
+    def _message_from_row(self, row: Any) -> MessageRecord:
         return MessageRecord(
-            id=row["id"],
+            id=int(row["id"]),
             subject=row["subject"],
             kind=row["kind"],
-            published_ts=row["published_ts"],
-            headers=json.loads(row["headers_json"]),
-            payload=json.loads(row["payload_json"]),
+            published_ts=_to_timestamp(row["published_ts"]) or 0.0,
+            headers=row["headers_json"],
+            payload=row["payload_json"],
             cbor=bytes(row["cbor"]),
             recv_epoch_ms=row["recv_epoch_ms"],
-            recv_iso=row["recv_iso"],
+            recv_iso=(
+                row["recv_iso"].astimezone(UTC).isoformat() if row["recv_iso"] is not None else None
+            ),
             message_type=row["message_type"],
             sensor_id=row["sensor_id"],
             day=row["day"],
@@ -235,70 +253,71 @@ class TimescaleDatastore:
     # ------------------------------------------------------------------
     # Command persistence
     # ------------------------------------------------------------------
-    def upsert_command(self, payload: Dict[str, Any], *, message_id: int, published_ts: float) -> None:
+    async def upsert_command(
+        self, payload: Dict[str, Any], *, message_id: int, published_ts: datetime | float | int | str
+    ) -> None:
         cmd_id = payload.get("cmd_id")
         if not cmd_id:
             return
 
+        pool = self._require_pool()
         units = None
         body = payload.get("payload")
         if isinstance(body, dict):
             units = body.get("units")
 
-        self._conn.execute(
-            """
-            INSERT INTO commands (
-                cmd_id,
-                name,
-                ts,
-                sender,
-                units,
-                payload_json,
-                published_ts,
-                message_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(cmd_id) DO UPDATE SET
-                name=excluded.name,
-                ts=excluded.ts,
-                sender=excluded.sender,
-                units=excluded.units,
-                payload_json=excluded.payload_json,
-                published_ts=excluded.published_ts,
-                message_id=excluded.message_id
-            """,
-            (
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {self._schema}.commands (
+                    cmd_id,
+                    name,
+                    ts,
+                    sender,
+                    units,
+                    payload_json,
+                    published_ts,
+                    message_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (cmd_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    ts = EXCLUDED.ts,
+                    sender = EXCLUDED.sender,
+                    units = EXCLUDED.units,
+                    payload_json = EXCLUDED.payload_json,
+                    published_ts = EXCLUDED.published_ts,
+                    message_id = EXCLUDED.message_id
+                """,
                 cmd_id,
                 payload.get("name"),
-                payload.get("ts"),
+                _to_datetime(payload.get("ts") or datetime.now(tz=UTC)),
                 payload.get("sender"),
                 units,
                 json.dumps(payload, separators=(",", ":")),
-                float(published_ts),
+                _to_datetime(published_ts),
                 message_id,
-            ),
-        )
-        self._conn.commit()
+            )
 
-    def latest_command(self, name: str) -> Optional[Dict[str, Any]]:
-        cursor = self._conn.execute(
-            """
-            SELECT payload_json FROM commands
-            WHERE name = ?
-            ORDER BY published_ts DESC
-            LIMIT 1
-            """,
-            (name,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
+    async def latest_command(self, name: str) -> Optional[Dict[str, Any]]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT payload_json FROM {self._schema}.commands
+                WHERE name = $1
+                ORDER BY published_ts DESC
+                LIMIT 1
+                """,
+                name,
+            )
         if row is None:
             return None
-        return json.loads(row["payload_json"])
+        return row["payload_json"]
 
     # ------------------------------------------------------------------
     # Tag persistence
     # ------------------------------------------------------------------
-    def apply_tag_event(
+    async def apply_tag_event(
         self,
         subject: str,
         payload: Dict[str, Any],
@@ -309,10 +328,10 @@ class TimescaleDatastore:
         if not tag_id:
             return
 
-        existing = self.get_tag(tag_id)
-        now_iso = datetime.now(timezone.utc).isoformat()
-        updated_ts = payload.get("ts") or (existing.updated_ts if existing else now_iso)
-        base_ts = payload.get("ts") or (existing.ts if existing else now_iso)
+        existing = await self.get_tag(tag_id)
+        now = datetime.now(tz=UTC)
+        updated_ts = payload.get("ts") or (existing.updated_ts if existing else now.isoformat())
+        base_ts = payload.get("ts") or (existing.ts if existing else now.isoformat())
 
         creator = payload.get("creator") or (existing.creator if existing else None)
         label = payload.get("label") or (existing.label if existing else None)
@@ -326,74 +345,84 @@ class TimescaleDatastore:
         elif subject.endswith("broadcast"):
             status = payload.get("status", existing.status if existing else "active") or "active"
 
-        self._conn.execute(
-            """
-            INSERT INTO tags (id, ts, creator, label, category, notes, extra_json, status, updated_ts, message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                ts=excluded.ts,
-                creator=excluded.creator,
-                label=excluded.label,
-                category=excluded.category,
-                notes=excluded.notes,
-                extra_json=excluded.extra_json,
-                status=excluded.status,
-                updated_ts=excluded.updated_ts,
-                message_id=excluded.message_id
-            """,
-            (
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {self._schema}.tags (
+                    id,
+                    ts,
+                    creator,
+                    label,
+                    category,
+                    notes,
+                    extra_json,
+                    status,
+                    updated_ts,
+                    message_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (id) DO UPDATE SET
+                    ts = EXCLUDED.ts,
+                    creator = EXCLUDED.creator,
+                    label = EXCLUDED.label,
+                    category = EXCLUDED.category,
+                    notes = EXCLUDED.notes,
+                    extra_json = EXCLUDED.extra_json,
+                    status = EXCLUDED.status,
+                    updated_ts = EXCLUDED.updated_ts,
+                    message_id = EXCLUDED.message_id
+                """,
                 tag_id,
-                base_ts,
+                _to_datetime(base_ts),
                 creator,
                 label,
                 category,
                 notes,
                 json.dumps(extra, separators=(",", ":")),
                 status,
-                updated_ts or base_ts,
+                _to_datetime(updated_ts),
                 message_id,
-            ),
-        )
-        self._conn.commit()
+            )
 
-    def get_tag(self, tag_id: str) -> Optional[TagRecord]:
-        cursor = self._conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
-        row = cursor.fetchone()
-        cursor.close()
+    async def get_tag(self, tag_id: str) -> Optional[TagRecord]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT * FROM {self._schema}.tags WHERE id = $1",
+                tag_id,
+            )
         if row is None:
             return None
         return TagRecord(
             id=row["id"],
-            ts=row["ts"],
+            ts=row["ts"].astimezone(UTC).isoformat(),
             creator=row["creator"],
             label=row["label"],
             category=row["category"],
             notes=row["notes"],
-            extra=json.loads(row["extra_json"]),
+            extra=row["extra_json"],
             status=row["status"],
-            updated_ts=row["updated_ts"],
+            updated_ts=row["updated_ts"].astimezone(UTC).isoformat(),
         )
 
-    def list_tags(self, *, include_deleted: bool = False) -> List[TagRecord]:
-        if include_deleted:
-            cursor = self._conn.execute("SELECT * FROM tags ORDER BY updated_ts DESC")
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM tags WHERE status != 'deleted' ORDER BY updated_ts DESC"
+    async def list_tags(self, *, include_deleted: bool = False) -> Sequence[TagRecord]:
+        pool = self._require_pool()
+        condition = "" if include_deleted else "WHERE status != 'deleted'"
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM {self._schema}.tags {condition} ORDER BY updated_ts DESC"
             )
-        rows = cursor.fetchall()
-        cursor.close()
         return [
             TagRecord(
                 id=row["id"],
-                ts=row["ts"],
+                ts=row["ts"].astimezone(UTC).isoformat(),
                 creator=row["creator"],
                 label=row["label"],
                 category=row["category"],
                 notes=row["notes"],
-                extra=json.loads(row["extra_json"]),
+                extra=row["extra_json"],
                 status=row["status"],
-                updated_ts=row["updated_ts"],
+                updated_ts=row["updated_ts"].astimezone(UTC).isoformat(),
             )
             for row in rows
         ]
@@ -401,21 +430,42 @@ class TimescaleDatastore:
     # ------------------------------------------------------------------
     # Convenience helpers
     # ------------------------------------------------------------------
-    def count_messages(self) -> int:
-        cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
-        (count,) = cursor.fetchone()
-        cursor.close()
-        return int(count)
+    async def count_messages(self) -> int:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            value = await conn.fetchval(
+                f"SELECT COUNT(*) FROM {self._schema}.messages"
+            )
+        return int(value)
 
-    def count_commands(self) -> int:
-        cursor = self._conn.execute("SELECT COUNT(*) FROM commands")
-        (count,) = cursor.fetchone()
-        cursor.close()
-        return int(count)
+    async def count_commands(self) -> int:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            value = await conn.fetchval(
+                f"SELECT COUNT(*) FROM {self._schema}.commands"
+            )
+        return int(value)
 
-    def count_tags(self) -> int:
-        cursor = self._conn.execute("SELECT COUNT(*) FROM tags")
-        (count,) = cursor.fetchone()
-        cursor.close()
-        return int(count)
+    async def count_tags(self) -> int:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            value = await conn.fetchval(
+                f"SELECT COUNT(*) FROM {self._schema}.tags"
+            )
+        return int(value)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _require_pool(self) -> Any:
+        if self._pool is None:
+            raise RuntimeError("TimescaleDatastore.connect() must be awaited before use")
+        return self._pool
+
+
+__all__ = [
+    "TimescaleDatastore",
+    "MessageRecord",
+    "TagRecord",
+]
 
