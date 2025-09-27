@@ -4,9 +4,7 @@
 This document captures the current discrepancies between the published specifications/README and the implementation that ships in this repository.
 
 ## Producer / Ingestion Pipeline
-- **README expectation:** `producer.py` is a standalone UDP listener that connects to a live NATS JetStream cluster (`python producer.py --nats-server ...`).【F:README.md†L34-L45】【F:README.md†L47-L53】
-- **Implementation reality:** The only producer is `tspi_kit.producer.TSPIProducer`, a helper that accepts already-received datagrams and publishes them via an injected publisher object; it never opens a UDP socket or a CLI entry point and is scoped to an in-memory JetStream helper.【F:tspi_kit/producer.py†L1-L48】 The repository root also has no `producer.py` script matching the advertised command.【83c4fc†L1-L4】
-- **Spec expectation:** The change specification reiterates that the Producer is a UDP ingest process that publishes exclusively to JetStream.【F:docs/player_receiver_jetstream.md†L5-L22】
+- ✅ `producer.py` now exists as a standalone asyncio CLI. It binds to UDP, parses TSPI datagrams with `TSPIProducer`, and publishes to JetStream using the official NATS client, matching both the README and change specification.【F:producer.py†L1-L109】【F:README.md†L6-L45】
 
 ## Receiver / Consumer
 - **README expectation:** `receiver.py` is a durable JetStream consumer CLI with toggles for JSON streaming (`--json-stream/--no-json-stream`).【F:README.md†L55-L59】

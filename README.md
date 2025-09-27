@@ -46,11 +46,12 @@ pip install -e .[ui]
 
 ## Components
 ### producer.py
-- UDP listener on port 30000 (configurable)
+- Standalone asyncio CLI that binds to UDP (default port 30000)
 - Parses BAPS TSPI v4 datagrams → Python dict → CBOR
 - Publishes to `tspi.geocentric.<sensor_id>` or `tspi.spherical.<sensor_id>`
 - Dedup headers: `Nats-Msg-Id = "<sensor>:<day>:<time_s>"`
-- Options: sensor filters, custom stream, multiple NATS servers
+- Options: sensor filters (`--sensor-id`), custom stream prefix, multiple NATS servers,
+  publish timeout, log level
 
 ### receiver.py
 - Durable consumer on `tspi.>`
