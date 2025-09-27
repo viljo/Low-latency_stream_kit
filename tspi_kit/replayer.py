@@ -1,8 +1,8 @@
-"""Store replayer implementation that republishes archived telemetry."""
+"""TimescaleDB-backed replay of JetStream telemetry."""
 from __future__ import annotations
 
-from typing import Callable, Iterable, List
-import time
+import asyncio
+from typing import Awaitable, Callable, Iterable, Sequence
 
 from .datastore import MessageRecord, TimescaleDatastore
 
@@ -14,38 +14,48 @@ def _subject_for_replay(room: str, message: MessageRecord) -> str:
 
 
 class StoreReplayer:
-    """Replay historical telemetry from the :class:`TimescaleDatastore`."""
+    """Replay historical telemetry from TimescaleDB back into JetStream."""
 
-    def __init__(self, datastore: TimescaleDatastore, publisher, *, sleep: Callable[[float], None] | None = None) -> None:
+    def __init__(
+        self,
+        datastore: TimescaleDatastore,
+        jetstream,
+        *,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
         self._datastore = datastore
-        self._publisher = publisher
-        self._sleep = sleep or time.sleep
+        self._jetstream = jetstream
+        self._sleep = sleep or asyncio.sleep
 
-    def replay_time_window(
+    async def replay_time_window(
         self,
         room: str,
         start_ts: float,
         end_ts: float,
         *,
         pace: bool = True,
-    ) -> List[MessageRecord]:
-        messages = self._datastore.fetch_messages_between(start_ts, end_ts)
-        self._replay(room, messages, pace=pace)
+    ) -> Sequence[MessageRecord]:
+        messages = await self._datastore.fetch_messages_between(start_ts, end_ts)
+        await self._replay(room, messages, pace=pace)
         return messages
 
-    def replay_tag(
+    async def replay_tag(
         self,
         room: str,
         tag_id: str,
         *,
         pace: bool = True,
         window_seconds: float = 10.0,
-    ) -> List[MessageRecord]:
-        messages = self._datastore.fetch_messages_for_tag(tag_id, window_seconds=window_seconds)
-        self._replay(room, messages, pace=pace)
+    ) -> Sequence[MessageRecord]:
+        messages = await self._datastore.fetch_messages_for_tag(
+            tag_id, window_seconds=window_seconds
+        )
+        await self._replay(room, messages, pace=pace)
         return messages
 
-    def _replay(self, room: str, messages: Iterable[MessageRecord], *, pace: bool) -> None:
+    async def _replay(
+        self, room: str, messages: Iterable[MessageRecord], *, pace: bool
+    ) -> None:
         last_recv_ms: float | None = None
         last_time_s: float | None = None
 
@@ -53,19 +63,18 @@ class StoreReplayer:
             if pace:
                 delay = self._compute_delay(record, last_recv_ms, last_time_s)
                 if delay > 0:
-                    self._sleep(delay)
+                    await self._sleep(delay)
 
             subject = _subject_for_replay(room, record)
             headers = dict(record.headers)
             message_id = headers.get("Nats-Msg-Id")
             if message_id is not None:
-                headers["Nats-Msg-Id"] = f"{message_id}:replay:{room}"
+                headers["Nats-Msg-Id"] = f"{message_id}:replay:{room}:{record.id}"
             headers.setdefault("X-Replay-Origin", "datastore")
-            self._publisher.publish(
+            await self._jetstream.publish(
                 subject,
                 record.cbor,
                 headers=headers,
-                timestamp=record.published_ts,
             )
 
             last_recv_ms = record.recv_epoch_ms

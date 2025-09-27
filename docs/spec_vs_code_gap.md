@@ -15,12 +15,11 @@ This document captures the current discrepancies between the published specifica
 - **Implementation reality:** The generator reuses the same in-memory JetStream wiring as the player; it never exposes UDP sockets or remote JetStream connectivity.【F:tspi_generator_qt.py†L1-L46】
 
 ## Persistence (Archiver, TimescaleDB, Replayer)
-- **Spec expectation:** JetStream is the authoritative backbone, and TimescaleDB stores telemetry/commands/tags with HA replication.【F:docs/player_receiver_jetstream.md†L24-L48】
-- **Implementation reality:** All persistence helpers are built around an `InMemoryJetStream` simulation and a SQLite-backed `TimescaleDatastore` that only emulates the TimescaleDB schema. There is no HA orchestration, no actual JetStream client, and the replayer simply republishes from SQLite into the in-memory transport.【F:tspi_kit/jetstream_sim.py†L1-L144】【F:tspi_kit/datastore.py†L56-L146】【F:tspi_kit/archiver.py†L1-L58】【F:tspi_kit/replayer.py†L1-L59】
+- ✅ **Resolved:** The archiver now consumes real JetStream pull subscriptions and persists into TimescaleDB via an asyncpg-backed client that mirrors the documented schema. Historical playback pulls the canonical records and republishes to `player.<room>.playout` with paced timing, matching the spec.【F:tspi_kit/archiver.py†L1-L94】【F:tspi_kit/datastore.py†L1-L461】【F:tspi_kit/replayer.py†L1-L88】
 
 ## Demo helper
 - **README expectation:** `./demo` orchestrates a three-node JetStream cluster, generator, receiver, and headless player against real infrastructure.【F:README.md†L87-L99】
 - **Implementation reality:** While the script scaffolds CLI plumbing, it operates on the same test-focused components that lack real JetStream/Timescale integrations, so the promised distributed environment cannot be realised with the current code.
 
 ## Summary
-Across the toolkit, the public README and accompanying JetStream integration spec describe a fully networked system backed by NATS JetStream and TimescaleDB. The shipped implementation is an integration-test harness that keeps everything in-memory (or SQLite), with no UDP ingestion, JetStream connectivity, or database integrations. Aligning the code with the documentation will require substantial feature work in every component of the pipeline.
+Across the toolkit, the public README and accompanying JetStream integration spec describe a fully networked system backed by NATS JetStream and TimescaleDB. Persistence now aligns with that story, but the GUI receiver, generator, and demo scripts still rely on in-memory transports and lack the documented JetStream/Timescale connectivity. Aligning the remainder will require substantial feature work in those components.
