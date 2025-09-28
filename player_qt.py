@@ -30,7 +30,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rate", type=float, default=1.0)
     parser.add_argument("--room", type=str, default="default")
     parser.add_argument("--clock", choices=["receive", "tspi"], default="receive")
-    parser.add_argument("--source", choices=["live", "historical"], default="live")
+    parser.add_argument(
+        "--source",
+        choices=["livestream", "replay.default", "live", "historical"],
+        default="livestream",
+    )
     parser.add_argument(
         "--smooth-center",
         type=float,
@@ -85,8 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     ensure_offscreen(args.headless)
     subject_map = {
-        "live": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
-        "historical": [f"player.{args.room}.playout.>", "tags.broadcast"],
+        "livestream": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
+        "replay.default": [f"player.{args.room}.playout.>", "tags.broadcast"],
     }
     js_client: JetStreamThreadedClient | None = None
     cleanup_required = False
@@ -97,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         receivers = {}
         for name, subjects in subject_map.items():
             durable_prefix = f"{args.durable_prefix}-{name}"
-            stream_name = args.js_stream if name == "live" else args.historical_stream
+            stream_name = args.js_stream if name == "livestream" else args.historical_stream
             receiver_list = []
             for index, subject in enumerate(subjects):
                 durable = f"{durable_prefix}-{index}"

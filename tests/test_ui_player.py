@@ -10,7 +10,8 @@ import cbor2
 
 from tspi_kit import CommandSender, InMemoryJetStream, TSPIProducer
 from tspi_kit.receiver import TSPIReceiver
-from tspi_kit.ui import JetStreamPlayerWindow
+from tspi_kit.ui import JetStreamPlayerWindow, PlayerState, UiConfig
+from tspi_kit.ui.player import connect_in_memory
 
 
 @pytest.fixture
@@ -53,6 +54,19 @@ def populated_player(qtbot):
     qtbot.addWidget(window)
     window.state.preload()
     return window, payloads
+
+
+def test_player_defaults_to_livestream_channel(populated_player):
+    window, _ = populated_player
+    assert window.state.current_channel == "livestream"
+    assert window.source_combo.currentText() == "livestream"
+
+
+def test_player_state_normalises_channel_aliases():
+    stream, sources = connect_in_memory({"live": "tspi.>"})
+    state = PlayerState(sources, ui_config=UiConfig())
+    assert state.current_channel == "livestream"
+    assert "livestream" in state.available_channels
 
 
 def test_player_controls_toggle(populated_player, qtbot):

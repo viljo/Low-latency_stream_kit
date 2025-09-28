@@ -27,7 +27,7 @@ class PlayerMetrics:
     rate: float = 0.0
     clock: str = "receive"
     lag: int = 0
-    source: str = "live"
+    source: str = "livestream"
     position: int = 0
     timeline: int = 0
 
@@ -65,13 +65,18 @@ class PlayerState(QtCore.QObject):
         super().__init__()
         self._ui_config = ui_config
         self._map_widget = map_widget
-        self._source_factories = self._normalize_sources(sources)
-        if not self._source_factories:
+        self._channel_labels: Dict[str, str] = {}
+        self._channel_factories = self._normalize_sources(sources)
+        if not self._channel_factories:
             raise ValueError("At least one telemetry source must be provided")
-        if initial_source not in self._source_factories:
-            initial_source = next(iter(self._source_factories))
-        self._current_source = initial_source
-        self._receiver = self._source_factories[self._current_source]()
+        initial_channel = self._normalise_channel_name(initial_source)
+        if initial_channel not in self._channel_factories:
+            if "livestream" in self._channel_factories:
+                initial_channel = "livestream"
+            else:
+                initial_channel = next(iter(self._channel_factories))
+        self._current_channel = initial_channel
+        self._receiver = self._channel_factories[self._current_channel]()
         self._playing = False
         self._timeline: List[dict] = []
         self._position = 0
@@ -81,7 +86,7 @@ class PlayerState(QtCore.QObject):
         self._metrics = PlayerMetrics(
             clock=ui_config.default_clock,
             rate=ui_config.default_rate,
-            source=self._current_source,
+            source=self._current_channel,
         )
         self._last_metrics = time.monotonic()
         self._timer = QtCore.QTimer()
@@ -95,18 +100,35 @@ class PlayerState(QtCore.QObject):
             self._map_widget.set_marker_color(self._marker_color)
 
     @staticmethod
+    def _normalise_channel_name(name: str) -> str:
+        label = str(name).strip()
+        if not label:
+            raise ValueError("Channel name must be a non-empty string")
+        lowered = label.lower()
+        if lowered == "live" or lowered == "livestream":
+            return "livestream"
+        if lowered == "historical":
+            return "replay.default"
+        return label
+
     def _normalize_sources(
-        sources: Mapping[str, ReceiverFactory | TSPIReceiver]
+        self, sources: Mapping[str, ReceiverFactory | TSPIReceiver]
     ) -> Dict[str, ReceiverFactory]:
         normalized: Dict[str, ReceiverFactory] = {}
-        for name, source in sources.items():
+        for raw_name, source in sources.items():
+            channel_id = self._normalise_channel_name(raw_name)
+            display_name = str(raw_name)
+            if channel_id == "livestream":
+                display_name = "livestream"
+            elif channel_id.startswith("replay."):
+                display_name = channel_id
             if isinstance(source, (TSPIReceiver, CompositeTSPIReceiver)):
                 receiver = source
 
                 def _factory(receiver=receiver) -> TSPIReceiver:
                     return receiver
 
-                normalized[name] = _factory
+                normalized[channel_id] = _factory
             elif callable(source):
 
                 def _factory(factory=source) -> TSPIReceiver:  # type: ignore[valid-type]
@@ -115,9 +137,11 @@ class PlayerState(QtCore.QObject):
                         raise TypeError("Receiver factory must return TSPIReceiver")
                     return value
 
-                normalized[name] = _factory
+                normalized[channel_id] = _factory
             else:
                 raise TypeError("Sources must be TSPIReceiver instances or callables returning them")
+            # Preserve the first label encountered for readability in the UI.
+            self._channel_labels.setdefault(channel_id, display_name)
         return normalized
 
     @property
@@ -133,12 +157,26 @@ class PlayerState(QtCore.QObject):
         return self._rate
 
     @property
+    def current_channel(self) -> str:
+        return self._current_channel
+
+    @property
     def current_source(self) -> str:
-        return self._current_source
+        return self._current_channel
+
+    @property
+    def available_channels(self) -> List[str]:
+        return list(self._channel_factories.keys())
 
     @property
     def available_sources(self) -> List[str]:
-        return list(self._source_factories.keys())
+        return self.available_channels
+
+    def channel_label(self, channel_id: str) -> str:
+        return self._channel_labels.get(channel_id, channel_id)
+
+    def channel_options(self) -> List[tuple[str, str]]:
+        return [(self.channel_label(channel), channel) for channel in self.available_channels]
 
     @property
     def display_units(self) -> str:
@@ -172,23 +210,27 @@ class PlayerState(QtCore.QObject):
         self._metrics.clock = value
         self._emit_metrics(force=True)
 
-    def set_source_mode(self, name: str) -> None:
-        if name == self._current_source:
+    def set_channel(self, name: str) -> None:
+        normalized = self._normalise_channel_name(name)
+        if normalized == self._current_channel:
             return
-        if name not in self._source_factories:
-            raise KeyError(f"Unknown source {name}")
+        if normalized not in self._channel_factories:
+            raise KeyError(f"Unknown channel {name}")
         self.pause()
-        self._receiver = self._source_factories[name]()
-        self._current_source = name
+        self._receiver = self._channel_factories[normalized]()
+        self._current_channel = normalized
         self._timeline.clear()
         self._position = 0
         self._sideband_cursor = 0
         self._metrics.frames = 0
         self._metrics.lag = 0
-        self._metrics.source = name
+        self._metrics.source = normalized
         self._metrics.position = 0
         self._metrics.timeline = 0
         self._emit_metrics(force=True)
+
+    def set_source_mode(self, name: str) -> None:
+        self.set_channel(name)
 
     def start(self) -> None:
         if not self._playing:
@@ -476,10 +518,10 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         self.clock_combo.currentTextChanged.connect(self._state.set_clock_source)
 
         self.source_combo = QtWidgets.QComboBox(self)
-        self.source_combo.addItems(self._state.available_sources)
-        self.source_combo.setCurrentText(self._state.current_source)
+        self.source_combo.addItems(self._state.available_channels)
+        self.source_combo.setCurrentText(self._state.current_channel)
         control_layout.addWidget(self.source_combo)
-        self.source_combo.currentTextChanged.connect(self._state.set_source_mode)
+        self.source_combo.currentTextChanged.connect(self._state.set_channel)
 
         layout.addWidget(self._map)
 
@@ -517,9 +559,9 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         sources: Mapping[str, ReceiverFactory | TSPIReceiver] | ReceiverFactory | TSPIReceiver,
     ) -> Mapping[str, ReceiverFactory | TSPIReceiver]:
         if isinstance(sources, TSPIReceiver) or callable(sources):
-            return {"live": sources}
+            return {"livestream": sources}
         if hasattr(sources, "items"):
-            return sources  # type: ignore[return-value]
+            return dict(sources)  # type: ignore[return-value]
         raise TypeError("Unsupported sources object for JetStreamPlayerWindow")
 
     def _update_units(self, units: str) -> None:
@@ -698,8 +740,8 @@ def connect_in_memory(
     subjects = dict(
         subject_map
         or {
-            "live": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
-            "historical": ["player.default.playout.>", "tags.broadcast"],
+            "livestream": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
+            "replay.default": ["player.default.playout.>", "tags.broadcast"],
         }
     )
 

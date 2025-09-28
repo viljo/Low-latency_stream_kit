@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Dict, Optional, Sequence
 
+from .channels import LIVESTREAM_SUBJECT
+
 try:  # pragma: no cover - optional dependency resolution
     import asyncpg
 except ModuleNotFoundError:  # pragma: no cover - deferred error until connect()
@@ -158,6 +160,9 @@ class TimescaleDatastore:
         raw_cbor: bytes,
     ) -> Optional[int]:
         """Insert a JetStream message into TimescaleDB if not already stored."""
+
+        if subject.startswith("tspi.channel.") and subject != LIVESTREAM_SUBJECT:
+            return None
 
         pool = self._require_pool()
         message_id = headers.get("Nats-Msg-Id")
