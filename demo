@@ -529,7 +529,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         print("requirements.txt not found; skipping Python dependency check.")
 
     from nats.aio.client import Client as NATS
-    from nats.errors import ErrNoServers
+    try:
+        from nats.errors import ErrNoServers
+    except ImportError:  # pragma: no cover - compatibility with newer nats-py
+        from nats.errors import NoServersError as ErrNoServers  # type: ignore[attr-defined]
     from nats.js.errors import NotFoundError
     from tspi_kit.archiver import Archiver
 

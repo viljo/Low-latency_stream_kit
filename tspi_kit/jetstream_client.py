@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
 from nats.aio.client import Client as NATS
-from nats.errors import ErrNoServers, TimeoutError
+try:
+    from nats.errors import ErrNoServers, TimeoutError
+except ImportError:  # pragma: no cover - compatibility with newer nats-py
+    from nats.errors import NoServersError as ErrNoServers, TimeoutError  # type: ignore[attr-defined]
 from nats.js.errors import NotFoundError
 
 
