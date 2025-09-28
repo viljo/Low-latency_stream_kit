@@ -6,6 +6,7 @@ import struct
 
 import pytest
 from PyQt5 import QtCore
+import cbor2
 
 from tspi_kit import CommandSender, InMemoryJetStream, TSPIProducer
 from tspi_kit.receiver import TSPIReceiver
@@ -46,7 +47,7 @@ def populated_player(qtbot):
         datagram = header + payload
         recv_time = base.timestamp() + index * 0.1
         payloads.append(producer.ingest(datagram, recv_time=recv_time))
-    consumer = stream.create_consumer("tspi.>")
+    consumer = stream.create_consumer(">")
     receiver = TSPIReceiver(consumer)
     window = JetStreamPlayerWindow(receiver)
     qtbot.addWidget(window)
@@ -121,7 +122,7 @@ def test_player_applies_display_commands(qtbot):
     sender = CommandSender(stream, sender_id="test-ui")
     sender.send_units("imperial")
     sender.send_marker_color("#123456")
-    consumer = stream.create_consumer("tspi.>")
+    consumer = stream.create_consumer(">")
     receiver = TSPIReceiver(consumer)
     window = JetStreamPlayerWindow(receiver)
     qtbot.addWidget(window)
@@ -134,3 +135,73 @@ def test_player_applies_display_commands(qtbot):
     assert window.map_widget.marker_color == "#123456"
     assert "imperial" in window._units_label.text()
     assert "#123456" in window._marker_label.text()
+
+
+def test_player_handles_tag_events(qtbot):
+    stream = InMemoryJetStream()
+    producer = TSPIProducer(stream)
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    header = struct.pack(
+        ">BBHHIBH",
+        0xC1,
+        4,
+        700,
+        200,
+        10_000,
+        0xFF,
+        0x01,
+    )
+    payload = struct.pack(
+        ">iii hhh hhh".replace(" ", ""),
+        int(100.0 * 1),
+        int(200.0 * 1),
+        int(300.0 * 1),
+        int(10.0 * 100),
+        int(5.0 * 100),
+        int(2.0 * 100),
+        int(0.5 * 100),
+        int(0.25 * 100),
+        int(0.1 * 100),
+    )
+    producer.ingest(header + payload, recv_time=base.timestamp())
+
+    tag_payload = {
+        "id": "tag-42",
+        "ts": base.isoformat(),
+        "label": "POI",
+        "status": "active",
+    }
+    stream.publish("tags.test.created", cbor2.dumps(tag_payload))
+
+    consumer = stream.create_consumer(">")
+    receiver = TSPIReceiver(consumer)
+    window = JetStreamPlayerWindow(receiver)
+    qtbot.addWidget(window)
+
+    received: list[dict] = []
+    window.state.tag_event.connect(received.append)
+
+    window.state.preload(batch=10)
+    window.state.start()
+    while window.state.position() < window.state.timeline_length():
+        window.step_once()
+
+    assert received and received[0]["id"] == "tag-42"
+    assert "tag-42" in window.state.tags
+    assert window._tag_list.count() == 1
+    assert "POI" in window._tag_list.item(0).text()
+
+    window.state.scrub_to_index(window.state.timeline_length() - 1)
+    assert window.state.seek_to_tag("tag-42")
+    snapshot = window.state.buffer_snapshot()
+    assert snapshot and snapshot[0]["id"] == "tag-42"
+
+    deletion = dict(tag_payload)
+    deletion["status"] = "deleted"
+    stream.publish("tags.test.deleted", cbor2.dumps(deletion))
+    window.state.preload(batch=10)
+    while window.state.position() < window.state.timeline_length():
+        window.step_once()
+
+    assert "tag-42" not in window.state.tags
+    assert window._tag_list.count() == 0

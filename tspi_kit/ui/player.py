@@ -51,6 +51,7 @@ class PlayerState(QtCore.QObject):
     metrics_updated = QtCore.pyqtSignal(PlayerMetrics)
     display_units_changed = QtCore.pyqtSignal(str)
     marker_color_changed = QtCore.pyqtSignal(str)
+    tag_event = QtCore.pyqtSignal(object)
 
     def __init__(
         self,
@@ -74,6 +75,7 @@ class PlayerState(QtCore.QObject):
         self._timeline: List[dict] = []
         self._position = 0
         self._history_limit = max(1, ui_config.scrub_history_size)
+        self._tags: Dict[str, dict] = {}
         self._metrics = PlayerMetrics(
             clock=ui_config.default_clock,
             rate=ui_config.default_rate,
@@ -144,6 +146,20 @@ class PlayerState(QtCore.QObject):
     def marker_color(self) -> str:
         return self._marker_color
 
+    @property
+    def tags(self) -> Mapping[str, dict]:
+        return dict(self._tags)
+
+    @staticmethod
+    def _is_tag_event(message: Mapping[str, object]) -> bool:
+        if "cmd_id" in message:
+            return False
+        tag_id = message.get("id")
+        status = message.get("status")
+        if isinstance(tag_id, str) and tag_id.strip():
+            return isinstance(status, str) and status.strip() != ""
+        return False
+
     def set_rate(self, value: float) -> None:
         self._rate = max(self._ui_config.rate_min, min(self._ui_config.rate_max, value))
         self._metrics.rate = self._rate
@@ -208,11 +224,15 @@ class PlayerState(QtCore.QObject):
             return
         filtered: List[dict] = []
         for message in messages:
-            if isinstance(message, dict) and "cmd_id" not in message:
-                try:
-                    validate_payload(message)
-                except jsonschema_exceptions.ValidationError:
+            if isinstance(message, dict):
+                if self._is_tag_event(message):
+                    filtered.append(message)
                     continue
+                if "cmd_id" not in message:
+                    try:
+                        validate_payload(message)
+                    except jsonschema_exceptions.ValidationError:
+                        continue
             filtered.append(message)
         if not filtered:
             return
@@ -259,6 +279,9 @@ class PlayerState(QtCore.QObject):
         if "cmd_id" in message:
             self._handle_command(message)
             return
+        if self._is_tag_event(message):
+            self._handle_tag(message)
+            return
         self._handle_telemetry(message)
 
     def _handle_command(self, message: dict) -> None:
@@ -278,6 +301,17 @@ class PlayerState(QtCore.QObject):
                 if self._map_widget:
                     self._map_widget.set_marker_color(color)
                 self.marker_color_changed.emit(color)
+
+    def _handle_tag(self, message: dict) -> None:
+        tag_id = str(message.get("id", "")).strip()
+        if not tag_id:
+            return
+        status = str(message.get("status", "")).lower()
+        if status == "deleted":
+            self._tags.pop(tag_id, None)
+        else:
+            self._tags[tag_id] = dict(message)
+        self.tag_event.emit(dict(message))
 
     def _handle_telemetry(self, message: dict) -> None:
         if self._map_widget:
@@ -318,6 +352,25 @@ class PlayerState(QtCore.QObject):
     def buffer_snapshot(self) -> List[dict]:
         return list(self._timeline[self._position :])
 
+    def seek_to_tag(self, tag_id: str) -> bool:
+        tag_id = tag_id.strip()
+        if not tag_id:
+            return False
+        for index, message in enumerate(self._timeline):
+            if isinstance(message, dict) and str(message.get("id", "")).strip() == tag_id:
+                self._position = index
+                self._metrics.position = self._position
+                self._emit_metrics(force=True)
+                return True
+        tag = self._tags.get(tag_id)
+        if tag:
+            for key in ("recv_iso", "ts", "updated_ts"):
+                iso_value = tag.get(key)
+                if isinstance(iso_value, str) and iso_value:
+                    self.seek(iso_value)
+                    return True
+        return False
+
 
 class JetStreamPlayerWindow(QtWidgets.QMainWindow):
     """Qt main window for the JetStream player with live/historical switching."""
@@ -347,9 +400,11 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
             map_widget=self._map,
         )
         self._scrubbing = False
+        self._tag_items: Dict[str, QtWidgets.QListWidgetItem] = {}
         self._build_ui()
         self._state.display_units_changed.connect(self._update_units)
         self._state.marker_color_changed.connect(self._update_marker_color)
+        self._state.tag_event.connect(self._on_tag_event)
         self._update_units(self._state.display_units)
         self._update_marker_color(self._state.marker_color)
 
@@ -411,6 +466,11 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
 
         self._state.metrics_updated.connect(self._update_metrics)
 
+        self._tag_list = QtWidgets.QListWidget(self)
+        self._tag_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._tag_list.itemActivated.connect(self._on_tag_selected)
+        layout.addWidget(self._tag_list)
+
     @staticmethod
     def _coerce_sources(
         sources: Mapping[str, ReceiverFactory | TSPIReceiver] | ReceiverFactory | TSPIReceiver,
@@ -434,6 +494,37 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         else:
             self._state.start()
             self.play_button.setText("Pause")
+
+    def _on_tag_event(self, tag: dict) -> None:
+        if not isinstance(tag, dict):
+            return
+        tag_id = str(tag.get("id", "")).strip()
+        if not tag_id:
+            return
+        label = str(tag.get("label", tag_id)).strip() or tag_id
+        status = str(tag.get("status", "")).lower()
+        if status == "deleted":
+            item = self._tag_items.pop(tag_id, None)
+            if item is not None:
+                row = self._tag_list.row(item)
+                self._tag_list.takeItem(row)
+            return
+        text = f"{label} ({tag_id})"
+        if tag_id in self._tag_items:
+            item = self._tag_items[tag_id]
+            item.setText(text)
+        else:
+            item = QtWidgets.QListWidgetItem(text)
+            self._tag_items[tag_id] = item
+            self._tag_list.addItem(item)
+        item.setData(QtCore.Qt.UserRole, tag_id)
+
+    def _on_tag_selected(self, item: QtWidgets.QListWidgetItem) -> None:
+        if item is None:
+            return
+        tag_id = item.data(QtCore.Qt.UserRole)
+        if isinstance(tag_id, str):
+            self._state.seek_to_tag(tag_id)
 
     def _on_seek(self) -> None:
         self._state.seek(self.seek_input.text())
