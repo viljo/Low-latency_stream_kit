@@ -12,7 +12,7 @@ from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
 from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
 from tspi_kit.producer import TSPIProducer
 from tspi_kit.ui import GeneratorController
-from tspi_kit.ui.flet_app import _ensure_flet
+from tspi_kit.ui.flet_app import _ensure_flet, pick_flet_web_port
 from tspi_kit.ui.player import connect_in_memory
 
 
@@ -290,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         page.on_close = _cleanup
         page.on_disconnect = _cleanup
 
-    ft.app(target=_launch)
+    ft.app(target=_launch, port=pick_flet_web_port())
     app = app_holder.get("app")
     if app is not None:
         app.shutdown()

@@ -11,7 +11,7 @@ from tspi_kit.jetstream_client import JetStreamThreadedClient
 from tspi_kit.receiver import CompositeTSPIReceiver, TSPIReceiver
 from tspi_kit.tags import TagSender
 from tspi_kit.ui import HeadlessPlayerRunner, UiConfig
-from tspi_kit.ui.flet_app import PlayerViewConfig, mount_player
+from tspi_kit.ui.flet_app import PlayerViewConfig, mount_player, pick_flet_web_port
 from tspi_kit.ui.player import ReceiverFactory, connect_in_memory
 
 
@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     def _launch(page: ft.Page) -> None:
         mount_player(page, sources, config=view_config)
 
-    ft.app(target=_launch)
+    ft.app(target=_launch, port=pick_flet_web_port())
     cleanup()
     return 0
 
