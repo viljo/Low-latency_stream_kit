@@ -35,7 +35,7 @@
 * Persists into TimescaleDB while deduplicating via the JetStream message id.
 
 ### TimescaleDB Datastore
-* Stores all JetStream messages (telemetry, commands, tags).
+* Stores live JetStream deliveries (telemetry, commands, tags) from `tspi.channel.livestream`.
 * Schema:
   * `messages` — append-only audit log with TSPI extracts.
   * `commands` — history of global commands.

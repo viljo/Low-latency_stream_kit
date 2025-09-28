@@ -76,8 +76,8 @@ def test_player_state_switches_sources_and_scrubs(qtbot) -> None:
         historical_producer.ingest(datagram, recv_time=base_epoch + 10 + index)
 
     subjects = {
-        "live": "tspi.>",
-        "historical": "player.training.playout.>",
+        "livestream": "tspi.>",
+        "replay.default": "player.training.playout.>",
     }
     sources = {
         name: (lambda subject=subject: TSPIReceiver(stream.create_consumer(subject)))
@@ -105,9 +105,9 @@ def test_player_state_switches_sources_and_scrubs(qtbot) -> None:
         assert state.timeline_length() == 3
         assert state._metrics.frames == 3
 
-        state.set_source_mode("historical")
+        state.set_channel("replay.default")
         state.preload(batch=10)
-        assert state.current_source == "historical"
+        assert state.current_channel == "replay.default"
         assert state.buffer_size() == 2
         assert state.timeline_length() == 2
 

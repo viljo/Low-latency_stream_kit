@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -21,6 +22,7 @@ from tspi_kit.channels import (
     replay_consumer_config,
     replay_advertisement_subjects,
 )
+from tspi_kit.datastore import TimescaleDatastore
 
 
 def test_live_channel_descriptor() -> None:
@@ -115,3 +117,20 @@ def test_replay_advertisement_subjects_match_spec() -> None:
     subjects = replay_advertisement_subjects()
     assert "tspi.channel.replay.>" in subjects
     assert "tspi.channel.client.>" in subjects
+
+
+def test_datastore_skips_non_livestream_channel_messages() -> None:
+    datastore = TimescaleDatastore("postgresql://example")
+
+    async def _call() -> int | None:
+        return await datastore.insert_message(
+            subject="tspi.channel.replay.20250928T110000Z",
+            kind="telemetry",
+            payload={},
+            headers={},
+            published_ts="2025-09-28T11:00:00Z",
+            raw_cbor=b"",
+        )
+
+    result = asyncio.run(_call())
+    assert result is None
