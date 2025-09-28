@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
 from tspi_kit.datastore import MessageRecord, TagRecord
+from tspi_kit.jetstream_client import normalize_stream_subjects
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 APT_UPDATED = False
@@ -528,11 +529,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     else:
         print("requirements.txt not found; skipping Python dependency check.")
 
+    from nats import errors as nats_errors
     from nats.aio.client import Client as NATS
-    try:
-        from nats.errors import ErrNoServers
-    except ImportError:  # pragma: no cover - compatibility with newer nats-py
-        from nats.errors import NoServersError as ErrNoServers  # type: ignore[attr-defined]
+    ErrNoServers = getattr(nats_errors, "ErrNoServers", nats_errors.NoServersError)
     from nats.js.errors import NotFoundError
     from tspi_kit.archiver import Archiver
 
@@ -558,10 +557,12 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     async def prepare_stream(js, replicas: int) -> None:
         stream_name = "TSPI"
-        subjects = ["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"]
+        subjects = normalize_stream_subjects(["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"])
         try:
             await js.stream_info(stream_name)
-            await js.update_stream({"name": stream_name, "subjects": subjects, "num_replicas": replicas})
+            await js.update_stream(
+                {"name": stream_name, "subjects": subjects, "num_replicas": replicas}
+            )
         except NotFoundError:
             await js.add_stream(
                 name=stream_name,
