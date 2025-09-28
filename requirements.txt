@@ -4,7 +4,7 @@ aiofiles==24.1.0
     # via low-latency-stream-kit (pyproject.toml)
 annotated-types==0.7.0
     # via pydantic
-asyncpg==0.29.0
+asyncpg==0.30.0
     # via low-latency-stream-kit (TimescaleDB persistence)
 attrs==25.3.0
     # via
