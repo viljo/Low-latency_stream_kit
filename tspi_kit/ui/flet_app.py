@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import socket
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Mapping, Optional
@@ -40,6 +42,23 @@ def _ensure_flet() -> ModuleType:
             ) from exc
         ft = _ft
     return ft
+
+
+def pick_flet_web_port(host: str = "127.0.0.1") -> int:
+    """Select an available TCP port for launching a Flet web server.
+
+    When running inside a headless Linux environment Flet defaults to port
+    8000 which prevents multiple apps from running side-by-side. Reserving a
+    free ephemeral port ahead of time allows each UI to bind to a unique port
+    while still letting Flet operate in "web server" mode.
+    """
+
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind((host, 0))
+        # Listening is not strictly required, but it ensures the port is kept
+        # reserved until the socket is closed.
+        sock.listen(1)
+        return sock.getsockname()[1]
 
 
 class JetStreamPlayerApp:

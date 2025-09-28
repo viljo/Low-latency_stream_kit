@@ -16,7 +16,7 @@ from tspi_kit.commands import OPS_CONTROL_SUBJECT
 from tspi_kit.jetstream_client import JetStreamConsumerAdapter, JetStreamThreadedClient
 from tspi_kit.tags import TagPayload, TagSender
 from tspi_kit.ui.command_console import ClientPresence, ClientPresenceTracker, OperatorEvent
-from tspi_kit.ui.flet_app import _ensure_flet
+from tspi_kit.ui.flet_app import _ensure_flet, pick_flet_web_port
 from tspi_kit.ui.player import connect_in_memory
 from tspi_kit.ui.signals import Signal
 
@@ -628,7 +628,7 @@ def main(argv: List[str] | None = None) -> int:
         page.on_close = _cleanup
         page.on_disconnect = _cleanup
 
-    ft.app(target=_launch)
+    ft.app(target=_launch, port=pick_flet_web_port())
     app = console_holder.get("app")
     if app is not None:
         app.shutdown()
