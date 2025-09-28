@@ -22,20 +22,13 @@ that still need attention.
   headless metrics output: `--style` toggles "normal" vs "airshow" formations
   and headless runs emit JSON metrics summarising frames, aircraft, and rate.【F:README.md†L61-L66】【F:tspi_generator_qt.py†L19-L148】【F:tspi_kit/generator.py†L10-L118】
 - ✅ The karaoke-style channel and replay specification now has a concrete implementation in `tspi_kit.channels`, and the README documents the helper APIs for operators and clients.【F:docs/channels-replay-spec.md†L1-L133】【F:tspi_kit/channels.py†L1-L295】【F:README.md†L9-L110】
+- ✅ The README's testing guidance now explains that the bundled `pytest-qt` stub is active by default and shows how to re-enable the upstream plugin when running against a full Qt runtime.【F:README.md†L69-L86】【F:pytest.ini†L1-L2】【F:pytestqt/plugin.py†L1-L31】
 
 ## Outstanding inconsistencies
 
-- ⚠️ The README's testing guidance still implies the upstream `pytest-qt` plugin drives the UI
-  suite even though the repository provides a lightweight stub implementation and disables the
-  real plugin via `pytest.ini`. The documentation should clarify that the stub is in place by
-  default and outline how to run the tests against a full Qt runtime when desired.【F:README.md†L69-L78】【F:pytest.ini†L1-L2】【F:pytestqt/plugin.py†L1-L31】
-- ⚠️ The README's offline maps section references CLI flags (`--smooth-center`, `--smooth-zoom`,
-  `--window-sec`) and the module `tspi_kit.ui.app.UiConfig`, but the smoothing parameters are only
-  available through the `UiConfig` dataclass in `tspi_kit.ui.config` and are not yet surfaced as
-  command-line options.【F:README.md†L81-L88】【F:tspi_kit/ui/config.py†L1-L20】
+None currently identified. Future updates should reassess once the offline map work or additional CLI surfaces ship.
 
 ## Summary
 Packaging and JetStream publishing behaviour now match the published documentation, and
-collaborative tag handling is wired up as specified. Outstanding doc updates should focus
-on clarifying the bundled pytest-qt stub and the current entry points for map smoothing
-configuration.
+collaborative tag handling is wired up as specified. No further documentation gaps are
+tracked at present, but the sheet should be revisited as new features land.
