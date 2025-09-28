@@ -60,9 +60,9 @@ pip install -e .[ui]
 
 ### tspi_generator_qt.py
 - Simulates geocentric TSPI for configurable fleet sizes
-- Styles: `normal` and `airshow`
+- Styles: `normal` and `airshow` (toggle with `--style` for aerobatic loops)
 - Outputs UDP datagrams and/or publishes directly to JetStream (CBOR)
-- Headless metrics: frames generated, aircraft count, current rate
+- Headless metrics: frames generated, aircraft count, current rate (JSON on stdout)
 - UI mode can continuously regenerate batches via `--continuous/--no-continuous`
 
 ## JSON Schema

@@ -18,16 +18,13 @@ that still need attention.
 - ✅ The player specification now reflects in-session command/tag history: it no
   longer promises a TimescaleDB bootstrap and documents the forward-seek replay
   behaviour implemented in `PlayerState`.【F:docs/player_receiver_jetstream.md†L51-L80】【F:tspi_kit/ui/player.py†L151-L367】
+- ✅ The README's generator feature list now reflects the available styles and
+  headless metrics output: `--style` toggles "normal" vs "airshow" formations
+  and headless runs emit JSON metrics summarising frames, aircraft, and rate.【F:README.md†L61-L66】【F:tspi_generator_qt.py†L19-L148】【F:tspi_kit/generator.py†L10-L118】
 
 ## Outstanding inconsistencies
 
-### README generator feature list
-The README still advertises generator "Styles: `normal` and `airshow`" and
-"Headless metrics" output.【F:README.md†L61-L66】 The CLI exposes no style-related
-arguments, and the headless branch simply runs the controller before exiting without
-printing or streaming metrics.【F:tspi_generator_qt.py†L17-L154】 The existing generator
-API only produces a single deterministic flight pattern, so the README oversells the
-current feature set.
+None at this time.
 
 ## Summary
 Packaging and JetStream publishing behaviour now match the published documentation, and

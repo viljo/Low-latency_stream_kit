@@ -50,8 +50,10 @@ class GeneratorController(QtCore.QObject):
 
     def run(self, duration: float) -> None:
         frames = int(duration * self._generator._config.rate_hz)
-        messages = self._generator.stream_to_producer(self._producer, duration_seconds=duration)
-        self._metrics.frames_generated += len(messages)
+        messages = self._generator.stream_to_producer(
+            self._producer, duration_seconds=duration
+        )
+        self._metrics.frames_generated += frames
         self.metrics_updated.emit(self._metrics.to_json())
 
 
