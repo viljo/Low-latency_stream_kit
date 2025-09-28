@@ -106,7 +106,7 @@ pip install -e .[ui]
 - Supports GUI and headless automation (`--headless`) for operational scripts.
 - Auto-provisions telemetry and operations streams when connected to JetStream
   and falls back to an in-memory broker for demos/tests.
-- can enable select and issue a replay from datastore for all clients
+- Launches group replays for all connected clients by identifier and lets operators stop active channels.
 - See [`docs/command_console.md`](docs/command_console.md) for usage examples.
 
 ### Channel helpers
@@ -130,7 +130,7 @@ pytest
 Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Flet UI/headless behaviour. Run `pytest -k ui` to focus on the interface-oriented checks after installing the `ui` extra.
 
 ## Offline Maps
-Map previews currently use placeholder widgets. Planned PyQtWebEngine/OSM integration will reuse the existing `UiConfig` dataclass (`tspi_kit.ui.config.UiConfig`) which already exposes smoothing parameters such as `smooth_center`, `smooth_zoom`, and `window_sec`; these values are presently configured programmatically rather than through CLI flags. Headless modes remain fully operational without map assets.
+Map previews currently use placeholder widgets. Planned WebView/OSM integration for the Flet UI will reuse the existing `UiConfig` dataclass (`tspi_kit.ui.config.UiConfig`) which already exposes smoothing parameters such as `smooth_center`, `smooth_zoom`, and `window_sec`; these values are presently configured programmatically rather than through CLI flags. Headless modes remain fully operational without map assets.
 
 ## License
 Apache License 2.0 — see `LICENSE`.

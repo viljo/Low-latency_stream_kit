@@ -1,16 +1,15 @@
-"""Qt controller for the TSPI flight generator."""
+"""Controller helpers for the TSPI flight generator."""
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt5 import QtCore
-
 from ..generator import FlightConfig, TSPIFlightGenerator
 from ..producer import TSPIProducer
 from .config import UiConfig
 from .player import HeadlessPlayerRunner, connect_in_memory
+from .signals import Signal
 
 
 @dataclass(slots=True)
@@ -27,10 +26,10 @@ class GeneratorMetrics:
         })
 
 
-class GeneratorController(QtCore.QObject):
+class GeneratorController:
     """Drive the TSPI flight generator and publish to JetStream."""
 
-    metrics_updated = QtCore.pyqtSignal(str)
+    metrics_updated: Signal[str]
 
     def __init__(
         self,
@@ -39,7 +38,7 @@ class GeneratorController(QtCore.QObject):
         *,
         ui_config: Optional[UiConfig] = None,
     ) -> None:
-        super().__init__()
+        self.metrics_updated = Signal[str]()
         self._generator = generator
         self._producer = producer
         self._config = ui_config or UiConfig()
@@ -54,6 +53,8 @@ class GeneratorController(QtCore.QObject):
             self._producer, duration_seconds=duration
         )
         self._metrics.frames_generated += frames
+        if messages:
+            self._metrics.rate = self._generator._config.rate_hz
         self.metrics_updated.emit(self._metrics.to_json())
 
 

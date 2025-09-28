@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 import pytest
 
-# Disable auto-loading external pytest plugins that might expect Qt bindings.
+# Disable auto-loading external pytest plugins that might expect unavailable GUI bindings.
 os.environ.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
 
 ROOT = Path(__file__).resolve().parents[1]

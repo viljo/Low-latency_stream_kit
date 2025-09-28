@@ -1,4 +1,4 @@
-"""Headless mode tests for Qt applications."""
+"""Headless mode tests for UI helpers."""
 from __future__ import annotations
 
 import struct

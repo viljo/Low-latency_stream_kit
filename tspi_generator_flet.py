@@ -1,21 +1,23 @@
-"""Entry point for the TSPI flight generator application."""
+"""Flet-based launcher for the TSPI flight generator."""
+
 from __future__ import annotations
 
 import argparse
+import json
 import socket
-import sys
-
-from PyQt5 import QtCore, QtWidgets
+import threading
+from typing import Any
 
 from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
 from tspi_kit.generator import FlightConfig, TSPIFlightGenerator
 from tspi_kit.producer import TSPIProducer
 from tspi_kit.ui import GeneratorController
-from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
+from tspi_kit.ui.flet_app import _ensure_flet
+from tspi_kit.ui.player import connect_in_memory
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TSPI Generator")
+    parser = argparse.ArgumentParser(description="TSPI Generator (Flet)")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--count", type=int, default=50)
     parser.add_argument("--rate", type=float, default=50.0)
@@ -118,9 +120,116 @@ class _MultiOutputProducer:
             self._udp_socket = None
 
 
+class FlightGeneratorApp:
+    """Minimal Flet UI that surfaces generator metrics."""
+
+    def __init__(
+        self,
+        page: Any,
+        controller: GeneratorController,
+        *,
+        duration: float,
+        continuous: bool,
+    ) -> None:
+        self._ft = _ensure_flet()
+        self.page = page
+        self.controller = controller
+        self.duration = max(duration, 0.1)
+        self.continuous = continuous
+        self._stop = threading.Event()
+        self._running = False
+        self._build_controls()
+        self._connect_signals()
+        self.start_generation()
+
+    def _build_controls(self) -> None:
+        ft = self._ft
+        self.page.title = "TSPI Flight Generator"
+        self.metrics_text = ft.Text("Awaiting metrics…")
+        self.status_text = ft.Text("Starting generator…")
+        self.log_view = ft.ListView(expand=1, spacing=4, auto_scroll=True)
+        self.start_button = ft.ElevatedButton("Start", on_click=self._on_start, disabled=True)
+        self.stop_button = ft.OutlinedButton("Stop", on_click=self._on_stop, disabled=not self.continuous)
+
+        layout = ft.Column(
+            [
+                ft.Text("Generator Status", style=ft.TextThemeStyle.TITLE_MEDIUM),
+                self.metrics_text,
+                self.status_text,
+                ft.Row([self.start_button, self.stop_button]),
+                ft.Text("Metrics Log", style=ft.TextThemeStyle.TITLE_MEDIUM),
+                ft.Container(self.log_view, expand=True),
+            ],
+            expand=True,
+            spacing=12,
+        )
+        self.page.add(layout)
+
+    def _connect_signals(self) -> None:
+        self.controller.metrics_updated.connect(
+            lambda payload: self.page.call_from_thread(lambda: self._update_metrics(payload))
+        )
+
+    def _update_metrics(self, payload: str) -> None:
+        try:
+            metrics = json.loads(payload)
+        except json.JSONDecodeError:
+            text = payload
+        else:
+            frames = metrics.get("frames_generated", 0)
+            aircraft = metrics.get("aircraft", 0)
+            rate = metrics.get("rate", 0.0)
+            text = f"Frames: {frames} | Aircraft: {aircraft} | Rate: {rate:.2f} Hz"
+        self.metrics_text.value = text
+        self.log_view.controls.append(self._ft.Text(text))
+        if len(self.log_view.controls) > 200:
+            del self.log_view.controls[0 : len(self.log_view.controls) - 200]
+        self.page.update()
+
+    # ------------------------------------------------------------------ Control handlers
+
+    def start_generation(self) -> None:
+        if self._running:
+            return
+        self._stop.clear()
+        self._running = True
+        self.status_text.value = "Generator running"
+        self.start_button.disabled = True
+        self.stop_button.disabled = False
+        self.page.update()
+        threading.Thread(target=self._run_loop, daemon=True).start()
+
+    def stop_generation(self) -> None:
+        self._stop.set()
+
+    def shutdown(self) -> None:
+        self.stop_generation()
+
+    def _run_loop(self) -> None:
+        try:
+            while not self._stop.is_set():
+                self.controller.run(self.duration)
+                if not self.continuous:
+                    break
+        finally:
+            self._running = False
+            self.page.call_from_thread(self._on_finished)
+
+    def _on_finished(self) -> None:
+        self.status_text.value = "Generator idle"
+        self.start_button.disabled = False
+        self.stop_button.disabled = True
+        self.page.update()
+
+    async def _on_start(self, _event) -> None:
+        self.start_generation()
+
+    async def _on_stop(self, _event) -> None:
+        self.stop_generation()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    ensure_offscreen(args.headless)
     js_client = None
     publisher = None
     if args.jetstream:
@@ -160,31 +269,37 @@ def main(argv: list[str] | None = None) -> int:
             js_client.close()
         return 0
 
-    app = QtWidgets.QApplication(sys.argv)
-    window = QtWidgets.QWidget()
-    window.setWindowTitle("TSPI Flight Generator")
-    layout = QtWidgets.QVBoxLayout(window)
-    label = QtWidgets.QLabel("Generator Ready", window)
-    layout.addWidget(label)
-    window.show()
-    controller.metrics_updated.connect(lambda payload: label.setText(payload))
-    run_once = lambda: controller.run(args.duration)
-    if args.continuous:
-        interval_ms = max(1, int(max(args.duration, 0.1) * 1000))
-        timer = QtCore.QTimer(window)
-        timer.setInterval(interval_ms)
-        timer.timeout.connect(run_once)
-        timer.start()
-        window._generator_timer = timer  # type: ignore[attr-defined]
-        QtCore.QTimer.singleShot(0, run_once)
-    else:
-        QtCore.QTimer.singleShot(0, run_once)
-    exit_code = app.exec()
+    ft = _ensure_flet()
+    app_holder: dict[str, FlightGeneratorApp] = {}
+
+    def _launch(page) -> None:
+        app = FlightGeneratorApp(
+            page,
+            controller,
+            duration=args.duration,
+            continuous=args.continuous,
+        )
+        app_holder["app"] = app
+
+        def _cleanup(_event: Any | None = None) -> None:
+            app.shutdown()
+            producer.close()
+            if js_client is not None:
+                js_client.close()
+
+        page.on_close = _cleanup
+        page.on_disconnect = _cleanup
+
+    ft.app(target=_launch)
+    app = app_holder.get("app")
+    if app is not None:
+        app.shutdown()
     producer.close()
     if js_client is not None:
         js_client.close()
-    return exit_code
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
