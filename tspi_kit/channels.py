@@ -249,6 +249,9 @@ class ChannelStatus:
     channel: ChannelDescriptor
     override: bool = False
     timestamp: datetime | str | float = field(default_factory=lambda: datetime.now(timezone.utc))
+    operator: Optional[str] = None
+    source_ip: Optional[str] = None
+    ping_ms: Optional[float] = None
 
     def to_dict(self) -> Dict[str, object]:
         ts_iso = _isoformat(_parse_timestamp(self.timestamp))
@@ -259,6 +262,9 @@ class ChannelStatus:
             "subject": self.channel.subject,
             "override": bool(self.override),
             "ts": ts_iso,
+            **({"operator": self.operator} if self.operator else {}),
+            **({"source_ip": self.source_ip} if self.source_ip else {}),
+            **({"ping_ms": float(self.ping_ms)} if self.ping_ms is not None else {}),
         }
 
 
