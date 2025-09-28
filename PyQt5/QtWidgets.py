@@ -1,7 +1,7 @@
 """Minimal stand-in for :mod:`PyQt5.QtWidgets` used in the tests."""
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .QtCore import QObject, Qt, _Signal
 
@@ -80,6 +80,17 @@ class QVBoxLayout(QLayout):
 
 class QHBoxLayout(QLayout):
     pass
+
+
+class QAbstractItemView(QWidget):
+    SingleSelection = 1
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._selection_mode = self.SingleSelection
+
+    def setSelectionMode(self, mode: int) -> None:
+        self._selection_mode = mode
 
 
 class QPushButton(QWidget):
@@ -202,17 +213,62 @@ class QLabel(QWidget):
         return self._text
 
 
+class QListWidgetItem:
+    def __init__(self, text: str = "") -> None:
+        self._text = text
+        self._data: Dict[int, Any] = {}
+
+    def setText(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:  # pragma: no cover - helper
+        return self._text
+
+    def setData(self, role: int, value: Any) -> None:
+        self._data[role] = value
+
+    def data(self, role: int) -> Any:
+        return self._data.get(role)
+
+
+class QListWidget(QAbstractItemView):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._items: List[QListWidgetItem] = []
+        self.itemActivated = _Signal()
+
+    def addItem(self, item: QListWidgetItem) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def item(self, index: int) -> QListWidgetItem:
+        return self._items[index]
+
+    def row(self, item: QListWidgetItem) -> int:
+        return self._items.index(item)
+
+    def takeItem(self, row: int) -> Optional[QListWidgetItem]:
+        if 0 <= row < len(self._items):
+            return self._items.pop(row)
+        return None
+
+
 __all__ = [
     "QApplication",
     "QWidget",
     "QMainWindow",
     "QVBoxLayout",
     "QHBoxLayout",
+    "QAbstractItemView",
     "QPushButton",
     "QLineEdit",
     "QDoubleSpinBox",
     "QComboBox",
     "QSlider",
     "QLabel",
+    "QListWidget",
+    "QListWidgetItem",
     "Qt",
 ]

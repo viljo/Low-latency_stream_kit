@@ -146,6 +146,7 @@ class QTimer(QObject):
 class _QtNamespace:
     Horizontal: int = 1
     LeftButton: int = 1
+    UserRole: int = 32
 
 
 Qt = _QtNamespace()
