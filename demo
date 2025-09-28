@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.metadata
+import importlib.util
 import shlex
 import os
 import shutil
@@ -139,6 +140,14 @@ def ensure_python_dependencies(requirements_path: Path) -> None:
                 missing.append(requirement)
     if missing:
         print(f"Installing missing Python packages: {', '.join(missing)}")
+        if importlib.util.find_spec("pip") is None:
+            try:
+                import ensurepip
+            except ImportError as exc:  # pragma: no cover - defensive fallback
+                raise RuntimeError(
+                    "Python 'pip' module is not available and could not be bootstrapped."
+                ) from exc
+            ensurepip.bootstrap(upgrade=True)
         subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
     else:
         print("All required Python packages are already installed.")
