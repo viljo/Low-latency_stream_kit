@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 import struct
 
 import pytest
-from PyQt5 import QtCore
 import cbor2
 
 from tspi_kit import CommandSender, InMemoryJetStream, TSPIProducer
@@ -15,7 +14,7 @@ from tspi_kit.ui.player import connect_in_memory
 
 
 @pytest.fixture
-def populated_player(qtbot):
+def populated_player():
     stream = InMemoryJetStream()
     producer = TSPIProducer(stream)
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -51,7 +50,6 @@ def populated_player(qtbot):
     consumer = stream.create_consumer(">")
     receiver = TSPIReceiver(consumer)
     window = JetStreamPlayerWindow(receiver)
-    qtbot.addWidget(window)
     window.state.preload()
     return window, payloads
 
@@ -69,32 +67,32 @@ def test_player_state_normalises_channel_aliases():
     assert "livestream" in state.available_channels
 
 
-def test_player_controls_toggle(populated_player, qtbot):
+def test_player_controls_toggle(populated_player):
     window, payloads = populated_player
     assert not window.state.playing
-    qtbot.mouseClick(window.play_button, QtCore.Qt.LeftButton)
+    window.play_button.click()
     assert window.state.playing
     window.step_once()
-    qtbot.mouseClick(window.play_button, QtCore.Qt.LeftButton)
+    window.play_button.click()
     assert not window.state.playing
 
 
-def test_seek_and_rate(populated_player, qtbot):
+def test_seek_and_rate(populated_player):
     window, payloads = populated_player
-    qtbot.mouseClick(window.play_button, QtCore.Qt.LeftButton)
+    window.play_button.click()
     window.step_once()
     buffer_before = window.state.buffer_size()
     last_iso = payloads[-1]["recv_iso"]
     window.seek_input.setText(last_iso)
-    qtbot.mouseClick(window.seek_button, QtCore.Qt.LeftButton)
+    window.seek_button.click()
     assert window.state.buffer_size() <= buffer_before
     window.rate_spin.setValue(2.0)
     assert window.state.rate == pytest.approx(2.0)
 
 
-def test_map_smoothing(populated_player, qtbot):
+def test_map_smoothing(populated_player):
     window, payloads = populated_player
-    qtbot.mouseClick(window.play_button, QtCore.Qt.LeftButton)
+    window.play_button.click()
     first_state = window.map_widget.state
     window.step_once()
     second_state = window.map_widget.state
@@ -106,7 +104,7 @@ def test_map_smoothing(populated_player, qtbot):
     assert delta_second < delta_first
 
 
-def test_player_applies_display_commands(qtbot):
+def test_player_applies_display_commands():
     stream = InMemoryJetStream()
     producer = TSPIProducer(stream)
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -139,9 +137,8 @@ def test_player_applies_display_commands(qtbot):
     consumer = stream.create_consumer(">")
     receiver = TSPIReceiver(consumer)
     window = JetStreamPlayerWindow(receiver)
-    qtbot.addWidget(window)
     window.state.preload(batch=10)
-    qtbot.mouseClick(window.play_button, QtCore.Qt.LeftButton)
+    window.play_button.click()
     for _ in range(window.state.timeline_length()):
         window.step_once()
     assert window.state.display_units == "imperial"
@@ -151,7 +148,7 @@ def test_player_applies_display_commands(qtbot):
     assert "#123456" in window._marker_label.text()
 
 
-def test_player_handles_tag_events(qtbot):
+def test_player_handles_tag_events():
     stream = InMemoryJetStream()
     producer = TSPIProducer(stream)
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -190,7 +187,6 @@ def test_player_handles_tag_events(qtbot):
     consumer = stream.create_consumer(">")
     receiver = TSPIReceiver(consumer)
     window = JetStreamPlayerWindow(receiver)
-    qtbot.addWidget(window)
 
     received: list[dict] = []
     window.state.tag_event.connect(received.append)
@@ -221,7 +217,7 @@ def test_player_handles_tag_events(qtbot):
     assert window._tag_list.count() == 0
 
 
-def test_forward_jump_replays_commands_and_tags(qtbot):
+def test_forward_jump_replays_commands_and_tags():
     stream = InMemoryJetStream()
     producer = TSPIProducer(stream)
     sender = CommandSender(stream, sender_id="test-ui")
@@ -271,7 +267,6 @@ def test_forward_jump_replays_commands_and_tags(qtbot):
     consumer = stream.create_consumer(">")
     receiver = TSPIReceiver(consumer)
     window = JetStreamPlayerWindow(receiver)
-    qtbot.addWidget(window)
 
     commands: list[dict] = []
     tags: list[dict] = []

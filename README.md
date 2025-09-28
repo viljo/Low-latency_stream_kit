@@ -1,10 +1,10 @@
 # Low-latency_stream_kit
 
-Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry. The suite ingests 37-byte TSPI datagrams, publishes them to NATS JetStream, replays captures, and simulates flights with both Qt5 GUIs and headless automation modes.
+Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry. The suite ingests 37-byte TSPI datagrams, publishes them to NATS JetStream, replays captures, and simulates flights with both Flet-based GUIs and headless automation modes.
 
 ## Features
 - **Producer** – UDP listener that parses TSPI datagrams, adds receive timestamps, and publishes CBOR payloads to JetStream with deduplication headers.
-- **Player/Receiver** – Single Qt5/CLI application that consumes JetStream telemetry, validates CBOR against the Draft 2020-12 schema, offers JSON/headless streaming, provides live ↔ historical playback with timeline scrubbing, rate control, metrics, and smoothed map previews, and now lets operators capture an instant UTC "Tagg" timestamp plus comment that is broadcast to every client and persisted in the datastore. Tags appear immediately in the live data stream as soon as the operator presses **Save/Send**, while datastore replays surface the same annotation when playback reaches the original tag timestamp.
+- **Player/Receiver** – Single Flet/CLI application that consumes JetStream telemetry, validates CBOR against the Draft 2020-12 schema, offers JSON/headless streaming, provides live ↔ historical playback with timeline scrubbing, rate control, metrics, and smoothed map previews, and now lets operators capture an instant UTC "Tagg" timestamp plus comment that is broadcast to every client and persisted in the datastore. Tags appear immediately in the live data stream as soon as the operator presses **Save/Send**, while datastore replays surface the same annotation when playback reaches the original tag timestamp.
 - **PCAP Replayer** – Utility to ingest 37-byte TSPI captures and push them into the JetStream pipeline for offline testing.
 - **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
 - **Command Console** – Operator workspace that issues broadcast commands and metadata (display units, marker colour, session metadata), launches or stops datastore-backed group replays, visualises an active-client roster with client status, displays a live operations log (with incoming and outgoing status and command messages), and exposes the same "Tagg" workflow so administrators can drop timestamped comments straight into TimescaleDB.
@@ -15,7 +15,7 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 ### Prerequisites
 - Python 3.11+
 - NATS JetStream cluster (e.g. `nats-server --jetstream`)
-- Optional GUI tooling: install with the `ui` extra for PyQt5 and qasync support
+- Optional GUI tooling: install with the `ui` extra for the Flet desktop UI
 
 ### Installation
 ```bash
@@ -38,11 +38,11 @@ pip install -e .[ui]
    ```
 3. **Generate synthetic traffic (headless)**
    ```bash
-   python tspi_generator_qt.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
+   python tspi_generator_flet.py --headless --nats-server nats://127.0.0.1:4222 --duration 10
    ```
 4. **Consume and play back telemetry**
    ```bash
-   python player_qt.py --headless --source live --nats-server nats://127.0.0.1:4222 --duration 10 --json-stream
+   python player_flet.py --headless --source live --nats-server nats://127.0.0.1:4222 --duration 10 --json-stream
    ```
 
 ## Components
@@ -54,7 +54,7 @@ pip install -e .[ui]
 - Options: sensor filters (`--sensor-id`), custom stream prefix, multiple NATS servers,
   publish timeout, log level
 
-### player_qt.py
+### player_flet.py
 - Unified GUI/headless JetStream receiver with live vs historical source selector
 - Optional JSON line output (`--json-stream/--no-json-stream`) for headless log pipelines
 - Timeline scrubber supports "YouTube-style" scrolling through buffered frames
@@ -64,14 +64,14 @@ pip install -e .[ui]
   soon as they are saved during live viewing and replay at the captured time
   when the session is played back from the datastore.
 
-### tspi_generator_qt.py
+### tspi_generator_flet.py
 - Simulates geocentric TSPI for configurable fleet sizes
 - Styles: `normal` and `airshow` (toggle with `--style` for aerobatic loops)
 - Outputs UDP datagrams and/or publishes directly to JetStream (CBOR)
 - Headless metrics: frames generated, aircraft count, current rate (JSON on stdout)
 - UI mode can continuously regenerate batches via `--continuous/--no-continuous`
 
-### command_console_qt.py
+### command_console_flet.py
 - Administrator-facing console for issuing live commands to receivers.
 - Adds an operations view with events recieved from clients and commands sent to clients.
 - Displays active clients in a sortable table including streaming channel,
@@ -106,13 +106,7 @@ The Draft 2020-12 schema in `tspi.schema.json` enforces shared fields (`type`, `
 ```bash
 pytest
 ```
-Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Qt5 GUI/headless behaviour. A lightweight stub of the `pytest-qt` plugin ships with the repo so UI tests can execute without the real Qt event loop; the real plugin is disabled in `pytest.ini` via `-p no:pytestqt`. Install the `ui` extra (and `pytest-qt`) if you want to exercise the applications against an actual Qt runtime, then re-enable the real fixture set with:
-
-```bash
-PYTEST_ADDOPTS="" pytest -p pytestqt
-```
-
-Run `pytest -k ui` to focus on the interface-oriented checks once the desired plugin is active.
+Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Flet UI/headless behaviour. Run `pytest -k ui` to focus on the interface-oriented checks after installing the `ui` extra.
 
 ## Offline Maps
 Map previews currently use placeholder widgets. Planned PyQtWebEngine/OSM integration will reuse the existing `UiConfig` dataclass (`tspi_kit.ui.config.UiConfig`) which already exposes smoothing parameters such as `smooth_center`, `smooth_zoom`, and `window_sec`; these values are presently configured programmatically rather than through CLI flags. Headless modes remain fully operational without map assets.

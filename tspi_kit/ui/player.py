@@ -1,16 +1,14 @@
-"""Qt-based JetStream player implementation."""
+"""Flet-aware player controller, harness, and headless utilities."""
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from jsonschema import exceptions as jsonschema_exceptions
-from PyQt5 import QtCore, QtWidgets
 
 from ..jetstream_sim import InMemoryJetStream
 from ..receiver import CompositeTSPIReceiver, TSPIReceiver
@@ -18,19 +16,15 @@ from ..schema import validate_payload
 from ..tags import TagSender
 from .config import UiConfig
 from .map import MapPreviewWidget, MapSmoother
+from .signals import Signal
 
 ReceiverFactory = Callable[[], TSPIReceiver | CompositeTSPIReceiver]
 
 
-def _set_enabled(widget, enabled: bool) -> None:
-    if hasattr(widget, "setEnabled"):
-        widget.setEnabled(enabled)  # type: ignore[attr-defined]
-    elif hasattr(widget, "setDisabled"):
-        widget.setDisabled(not enabled)  # type: ignore[attr-defined]
-
-
 @dataclass(slots=True)
 class PlayerMetrics:
+    """Runtime metrics emitted by :class:`PlayerState`."""
+
     frames: int = 0
     rate: float = 0.0
     clock: str = "receive"
@@ -53,14 +47,8 @@ class PlayerMetrics:
         )
 
 
-class PlayerState(QtCore.QObject):
-    """Controller shared between GUI and headless playback with source switching."""
-
-    metrics_updated = QtCore.pyqtSignal(PlayerMetrics)
-    display_units_changed = QtCore.pyqtSignal(str)
-    marker_color_changed = QtCore.pyqtSignal(str)
-    command_event = QtCore.pyqtSignal(object)
-    tag_event = QtCore.pyqtSignal(object)
+class PlayerState:
+    """Controller shared by the Flet UI and headless runner."""
 
     def __init__(
         self,
@@ -70,7 +58,11 @@ class PlayerState(QtCore.QObject):
         initial_source: str = "live",
         map_widget: Optional[MapPreviewWidget] = None,
     ) -> None:
-        super().__init__()
+        self.metrics_updated: Signal[PlayerMetrics] = Signal()
+        self.display_units_changed: Signal[str] = Signal()
+        self.marker_color_changed: Signal[str] = Signal()
+        self.command_event: Signal[object] = Signal()
+        self.tag_event: Signal[object] = Signal()
         self._ui_config = ui_config
         self._map_widget = map_widget
         self._channel_labels: Dict[str, str] = {}
@@ -97,9 +89,6 @@ class PlayerState(QtCore.QObject):
             source=self._current_channel,
         )
         self._last_metrics = time.monotonic()
-        self._timer = QtCore.QTimer()
-        self._timer.setInterval(50)
-        self._timer.timeout.connect(self._tick)
         self._clock_source = ui_config.default_clock
         self._rate = ui_config.default_rate
         self._display_units = ui_config.default_units
@@ -113,7 +102,7 @@ class PlayerState(QtCore.QObject):
         if not label:
             raise ValueError("Channel name must be a non-empty string")
         lowered = label.lower()
-        if lowered == "live" or lowered == "livestream":
+        if lowered in {"live", "livestream"}:
             return "livestream"
         if lowered == "historical":
             return "replay.default"
@@ -148,7 +137,6 @@ class PlayerState(QtCore.QObject):
                 normalized[channel_id] = _factory
             else:
                 raise TypeError("Sources must be TSPIReceiver instances or callables returning them")
-            # Preserve the first label encountered for readability in the UI.
             self._channel_labels.setdefault(channel_id, display_name)
         return normalized
 
@@ -169,16 +157,8 @@ class PlayerState(QtCore.QObject):
         return self._current_channel
 
     @property
-    def current_source(self) -> str:
-        return self._current_channel
-
-    @property
     def available_channels(self) -> List[str]:
         return list(self._channel_factories.keys())
-
-    @property
-    def available_sources(self) -> List[str]:
-        return self.available_channels
 
     def channel_label(self, channel_id: str) -> str:
         return self._channel_labels.get(channel_id, channel_id)
@@ -198,58 +178,14 @@ class PlayerState(QtCore.QObject):
     def tags(self) -> Mapping[str, dict]:
         return dict(self._tags)
 
-    @staticmethod
-    def _is_tag_event(message: Mapping[str, object]) -> bool:
-        if "cmd_id" in message:
-            return False
-        tag_id = message.get("id")
-        status = message.get("status")
-        if isinstance(tag_id, str) and tag_id.strip():
-            return isinstance(status, str) and status.strip() != ""
-        return False
-
-    def set_rate(self, value: float) -> None:
-        self._rate = max(self._ui_config.rate_min, min(self._ui_config.rate_max, value))
-        self._metrics.rate = self._rate
-        self._emit_metrics(force=True)
-
-    def set_clock_source(self, value: str) -> None:
-        self._clock_source = value
-        self._metrics.clock = value
-        self._emit_metrics(force=True)
-
-    def set_channel(self, name: str) -> None:
-        normalized = self._normalise_channel_name(name)
-        if normalized == self._current_channel:
-            return
-        if normalized not in self._channel_factories:
-            raise KeyError(f"Unknown channel {name}")
-        self.pause()
-        self._receiver = self._channel_factories[normalized]()
-        self._current_channel = normalized
-        self._timeline.clear()
-        self._position = 0
-        self._sideband_cursor = 0
-        self._metrics.frames = 0
-        self._metrics.lag = 0
-        self._metrics.source = normalized
-        self._metrics.position = 0
-        self._metrics.timeline = 0
-        self._emit_metrics(force=True)
-
-    def set_source_mode(self, name: str) -> None:
-        self.set_channel(name)
-
     def start(self) -> None:
         if not self._playing:
             self._playing = True
-            self._timer.start()
             self._emit_metrics(force=True)
 
     def pause(self) -> None:
         if self._playing:
             self._playing = False
-            self._timer.stop()
 
     def seek(self, iso_timestamp: str) -> None:
         previous = self._position
@@ -318,6 +254,65 @@ class PlayerState(QtCore.QObject):
     def position(self) -> int:
         return self._position
 
+    def buffer_size(self) -> int:
+        return max(0, len(self._timeline) - self._position)
+
+    def buffer_snapshot(self) -> List[dict]:
+        return list(self._timeline[self._position :])
+
+    def seek_to_tag(self, tag_id: str) -> bool:
+        tag_id = tag_id.strip()
+        if not tag_id:
+            return False
+        for index, message in enumerate(self._timeline):
+            if isinstance(message, dict) and str(message.get("id", "")).strip() == tag_id:
+                self._position = index
+                self._metrics.position = self._position
+                self._emit_metrics(force=True)
+                return True
+        tag = self._tags.get(tag_id)
+        if tag:
+            for key in ("recv_iso", "ts", "updated_ts"):
+                iso_value = tag.get(key)
+                if isinstance(iso_value, str) and iso_value:
+                    self.seek(iso_value)
+                    return True
+        return False
+
+    def set_rate(self, rate: float) -> None:
+        clamped = max(self._ui_config.rate_min, min(self._ui_config.rate_max, float(rate)))
+        self._rate = clamped
+        self._metrics.rate = clamped
+        self._emit_metrics(force=True)
+
+    def set_clock_source(self, clock: str) -> None:
+        clock = str(clock).lower()
+        if clock in {"receive", "tspi"}:
+            self._clock_source = clock
+            self._metrics.clock = clock
+            self._emit_metrics(force=True)
+
+    def set_channel(self, channel: str) -> None:
+        normalized = self._normalise_channel_name(channel)
+        if normalized not in self._channel_factories:
+            return
+        if normalized == self._current_channel:
+            return
+        self._current_channel = normalized
+        self._receiver = self._channel_factories[normalized]()
+        self._timeline.clear()
+        self._position = 0
+        self._sideband_cursor = 0
+        self._metrics.source = normalized
+        self._metrics.frames = 0
+        self._emit_metrics(force=True)
+
+    def set_source_mode(self, name: str) -> None:
+        self.set_channel(name)
+
+    def step_once(self) -> None:
+        self._tick()
+
     def _tick(self) -> None:
         if not self._playing:
             return
@@ -354,6 +349,10 @@ class PlayerState(QtCore.QObject):
                 self._handle_command(message)
             elif self._is_tag_event(message):
                 self._handle_tag(message)
+
+    @staticmethod
+    def _is_tag_event(message: Mapping[str, object]) -> bool:
+        return "id" in message and "status" in message and "cmd_id" not in message
 
     def _handle_message(self, message: dict) -> None:
         if not isinstance(message, dict):
@@ -423,40 +422,141 @@ class PlayerState(QtCore.QObject):
                 pending = 0
             self._metrics.lag = int(pending)
             self._metrics.timeline = len(self._timeline)
-            self._metrics.position = self._position
             self.metrics_updated.emit(self._metrics)
 
-    def step_once(self) -> None:
-        self._tick()
 
-    def buffer_size(self) -> int:
-        return max(0, len(self._timeline) - self._position)
+class _SignalAdapter:
+    def __init__(self) -> None:
+        self._callbacks: List[Callable[..., None]] = []
 
-    def buffer_snapshot(self) -> List[dict]:
-        return list(self._timeline[self._position :])
+    def connect(self, callback: Callable[..., None]) -> None:
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
 
-    def seek_to_tag(self, tag_id: str) -> bool:
-        tag_id = tag_id.strip()
-        if not tag_id:
-            return False
-        for index, message in enumerate(self._timeline):
-            if isinstance(message, dict) and str(message.get("id", "")).strip() == tag_id:
-                self._position = index
-                self._metrics.position = self._position
-                self._emit_metrics(force=True)
-                return True
-        tag = self._tags.get(tag_id)
-        if tag:
-            for key in ("recv_iso", "ts", "updated_ts"):
-                iso_value = tag.get(key)
-                if isinstance(iso_value, str) and iso_value:
-                    self.seek(iso_value)
-                    return True
-        return False
+    def emit(self, *args, **kwargs) -> None:
+        for callback in list(self._callbacks):
+            callback(*args, **kwargs)
 
 
-class JetStreamPlayerWindow(QtWidgets.QMainWindow):
-    """Qt main window for the JetStream player with live/historical switching."""
+class _Button:
+    def __init__(self, label: str, on_click: Callable[[], None]) -> None:
+        self._label = label
+        self._on_click = on_click
+
+    @property
+    def text(self) -> str:
+        return self._label
+
+    def set_text(self, value: str) -> None:
+        self._label = value
+
+    def click(self) -> None:
+        self._on_click()
+
+
+class _TextInput:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def setText(self, value: str) -> None:
+        self.value = value
+
+    def text(self) -> str:
+        return self.value
+
+
+class _SpinBox:
+    def __init__(self, *, minimum: float, maximum: float, value: float) -> None:
+        self._min = minimum
+        self._max = maximum
+        self._value = value
+        self.valueChanged = _SignalAdapter()
+
+    def setValue(self, value: float) -> None:
+        clamped = max(self._min, min(self._max, value))
+        self._value = clamped
+        self.valueChanged.emit(clamped)
+
+    def value(self) -> float:
+        return self._value
+
+
+class _ComboBox:
+    def __init__(self, options: Sequence[str], current: str) -> None:
+        self._options = list(options)
+        self._current = current
+        self.currentTextChanged = _SignalAdapter()
+
+    def addItems(self, options: Iterable[str]) -> None:
+        for option in options:
+            if option not in self._options:
+                self._options.append(option)
+
+    def setCurrentText(self, value: str) -> None:
+        if value not in self._options:
+            return
+        self._current = value
+        self.currentTextChanged.emit(value)
+
+    def currentText(self) -> str:
+        return self._current
+
+    def options(self) -> List[str]:
+        return list(self._options)
+
+
+class _Label:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def setText(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:
+        return self._text
+
+
+class _ListItem:
+    def __init__(self, text: str, data: Optional[str] = None) -> None:
+        self._text = text
+        self._data = data
+
+    def text(self) -> str:
+        return self._text
+
+    def data(self) -> Optional[str]:
+        return self._data
+
+
+class _ListWidget:
+    def __init__(self) -> None:
+        self._items: List[_ListItem] = []
+
+    def addItem(self, text: str) -> None:
+        self._items.append(_ListItem(text))
+
+    def add_or_replace(self, text: str, tag_id: str) -> None:
+        self.remove_by_data(tag_id)
+        self._items.append(_ListItem(text, tag_id))
+
+    def clear(self) -> None:
+        self._items.clear()
+
+    def remove_by_data(self, tag_id: str) -> None:
+        self._items = [item for item in self._items if item.data() != tag_id]
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def item(self, index: int) -> _ListItem:
+        return self._items[index]
+
+    def takeItem(self, index: int) -> None:
+        del self._items[index]
+
+
+class JetStreamPlayerWindow:
+    """Headless harness exposing a Flet-inspired API for tests."""
 
     def __init__(
         self,
@@ -465,124 +565,41 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         ui_config: Optional[UiConfig] = None,
         initial_source: str = "live",
         tag_sender: Optional[TagSender] = None,
-        parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Unified JetStream Receiver")
-        self._config = ui_config or UiConfig()
+        config = ui_config or UiConfig()
         self._map = MapPreviewWidget(
-            MapSmoother(
-                smooth_center=self._config.smooth_center,
-                smooth_zoom=self._config.smooth_zoom,
-            )
+            MapSmoother(smooth_center=config.smooth_center, smooth_zoom=config.smooth_zoom)
         )
         normalized_sources = self._coerce_sources(sources)
         self._state = PlayerState(
             normalized_sources,
-            ui_config=self._config,
+            ui_config=config,
             initial_source=initial_source,
             map_widget=self._map,
         )
         self._tag_sender = tag_sender
-        self._pending_tag_timestamp: datetime | None = None
-        self._scrubbing = False
-        self._tag_items: Dict[str, QtWidgets.QListWidgetItem] = {}
+        self._tag_items: Dict[str, _ListItem] = {}
         self._logitech_limit = 200
-        self._build_ui()
+        self._log_entries = _ListWidget()
+        self._tag_list = _ListWidget()
+        self.play_button = _Button("Play", self._toggle_play)
+        self.seek_input = _TextInput()
+        self.seek_button = _Button("Seek", self._on_seek)
+        self.rate_spin = _SpinBox(
+            minimum=config.rate_min, maximum=config.rate_max, value=self._state.rate
+        )
+        self.rate_spin.valueChanged.connect(self._state.set_rate)
+        self.clock_combo = _ComboBox(["receive", "tspi"], self._state.clock_source)
+        self.clock_combo.currentTextChanged.connect(self._state.set_clock_source)
+        self.source_combo = _ComboBox(self._state.available_channels, self._state.current_channel)
+        self.source_combo.currentTextChanged.connect(self._state.set_channel)
+        self._units_label = _Label(f"Units: {self._state.display_units}")
+        self._marker_label = _Label(f"Marker: {self._state.marker_color}")
         self._state.display_units_changed.connect(self._update_units)
         self._state.marker_color_changed.connect(self._update_marker_color)
         self._state.command_event.connect(self._on_command_event)
         self._state.tag_event.connect(self._on_tag_event)
-        self._update_units(self._state.display_units)
-        self._update_marker_color(self._state.marker_color)
-
-    def _build_ui(self) -> None:
-        central = QtWidgets.QWidget(self)
-        layout = QtWidgets.QVBoxLayout(central)
-        self.setCentralWidget(central)
-
-        control_layout = QtWidgets.QHBoxLayout()
-        layout.addLayout(control_layout)
-
-        self.play_button = QtWidgets.QPushButton("Play", self)
-        control_layout.addWidget(self.play_button)
-        self.play_button.clicked.connect(self._toggle_play)
-
-        self.seek_input = QtWidgets.QLineEdit(self)
-        self.seek_input.setPlaceholderText("ISO timestamp")
-        control_layout.addWidget(self.seek_input)
-
-        self.seek_button = QtWidgets.QPushButton("Seek", self)
-        control_layout.addWidget(self.seek_button)
-        self.seek_button.clicked.connect(self._on_seek)
-
-        self.rate_spin = QtWidgets.QDoubleSpinBox(self)
-        self.rate_spin.setRange(self._config.rate_min, self._config.rate_max)
-        self.rate_spin.setValue(self._config.default_rate)
-        control_layout.addWidget(self.rate_spin)
-        self.rate_spin.valueChanged.connect(self._state.set_rate)
-
-        self.clock_combo = QtWidgets.QComboBox(self)
-        self.clock_combo.addItems(["receive", "tspi"])
-        self.clock_combo.setCurrentText(self._state.clock_source)
-        control_layout.addWidget(self.clock_combo)
-        self.clock_combo.currentTextChanged.connect(self._state.set_clock_source)
-
-        self.source_combo = QtWidgets.QComboBox(self)
-        self.source_combo.addItems(self._state.available_channels)
-        self.source_combo.setCurrentText(self._state.current_channel)
-        control_layout.addWidget(self.source_combo)
-        self.source_combo.currentTextChanged.connect(self._state.set_channel)
-
-        layout.addWidget(self._map)
-
-        status_layout = QtWidgets.QHBoxLayout()
-        layout.addLayout(status_layout)
-        self._units_label = QtWidgets.QLabel("Units: metric", self)
-        status_layout.addWidget(self._units_label)
-        self._marker_label = QtWidgets.QLabel("Marker: #00ff00", self)
-        status_layout.addWidget(self._marker_label)
-
-        tag_layout = QtWidgets.QHBoxLayout()
-        layout.addLayout(tag_layout)
-        self._tag_button = QtWidgets.QPushButton("Tagg", self)
-        tag_layout.addWidget(self._tag_button)
-        self._tag_timestamp_label = QtWidgets.QLabel("Press Tagg to capture", self)
-        tag_layout.addWidget(self._tag_timestamp_label)
-        self._tag_comment_edit = QtWidgets.QLineEdit(self)
-        self._tag_comment_edit.setPlaceholderText("Enter comment")
-        _set_enabled(self._tag_comment_edit, False)
-        tag_layout.addWidget(self._tag_comment_edit)
-        self._tag_send_button = QtWidgets.QPushButton("Save/Send", self)
-        _set_enabled(self._tag_send_button, False)
-        tag_layout.addWidget(self._tag_send_button)
-
-        self._scrub_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
-        self._scrub_slider.setRange(0, 0)
-        layout.addWidget(self._scrub_slider)
-        self._scrub_slider.sliderPressed.connect(self._on_scrub_pressed)
-        self._scrub_slider.sliderReleased.connect(self._on_scrub_released)
-
-        self._metrics_label = QtWidgets.QLabel("Frames: 0", self)
-        layout.addWidget(self._metrics_label)
-
-        self._state.metrics_updated.connect(self._update_metrics)
-
-        self._tag_button.clicked.connect(self._capture_tag_timestamp)
-        self._tag_send_button.clicked.connect(self._send_tag_comment)
-        _set_enabled(self._tag_button, self._tag_sender is not None)
-        self._reset_tag_controls()
-
-        logitech_layout = QtWidgets.QVBoxLayout()
-        layout.addLayout(logitech_layout)
-        logitech_layout.addWidget(QtWidgets.QLabel("Command & Tag Log", self))
-        self._logitech_list = QtWidgets.QListWidget(self)
-        logitech_layout.addWidget(self._logitech_list)
-
-        self._tag_list = QtWidgets.QListWidget(self)
-        self._tag_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self._tag_list.itemActivated.connect(self._on_tag_selected)
-        layout.addWidget(self._tag_list)
+        self._state.metrics_updated.connect(self._on_metrics)
 
     @staticmethod
     def _coerce_sources(
@@ -594,133 +611,51 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
             return dict(sources)  # type: ignore[return-value]
         raise TypeError("Unsupported sources object for JetStreamPlayerWindow")
 
+    def _toggle_play(self) -> None:
+        if self._state.playing:
+            self._state.pause()
+            self.play_button.set_text("Play")
+        else:
+            self._state.start()
+            self.play_button.set_text("Pause")
+
+    def _on_seek(self) -> None:
+        self._state.seek(self.seek_input.text())
+
     def _update_units(self, units: str) -> None:
         self._units_label.setText(f"Units: {units}")
 
     def _update_marker_color(self, color: str) -> None:
         self._marker_label.setText(f"Marker: {color}")
 
-    def _capture_tag_timestamp(self) -> None:
-        if self._tag_sender is None:
-            return
-        timestamp = datetime.now(tz=UTC)
-        self._pending_tag_timestamp = timestamp
-        self._tag_timestamp_label.setText(timestamp.strftime("%Y-%m-%d %H:%M:%SZ"))
-        _set_enabled(self._tag_comment_edit, True)
-        self._tag_comment_edit.setText("")
-        self._tag_comment_edit.setFocus()
-        _set_enabled(self._tag_send_button, True)
+    def _on_metrics(self, metrics: PlayerMetrics) -> None:
+        summary = f"Frames: {metrics.frames} | Rate: {metrics.rate:.2f}"
+        self._log_entries.addItem(summary)
+        if self._log_entries.count() > self._logitech_limit:
+            self._log_entries.takeItem(0)
 
-    def _send_tag_comment(self) -> None:
-        if self._tag_sender is None or self._pending_tag_timestamp is None:
-            return
-        comment = self._tag_comment_edit.text().strip()
-        if not comment:
-            return
-        try:
-            payload = self._tag_sender.create_tag(
-                comment,
-                timestamp=self._pending_tag_timestamp,
-            )
-        except Exception as exc:
-            self._append_logitech_entry(
-                "TAG",
-                {"ts": self._pending_tag_timestamp.isoformat()},
-                summary=f"Tag send failed: {exc}",
-            )
-            return
-        self._reset_tag_controls(f"Tagged {payload.ts}")
+    def _on_command_event(self, message: Mapping[str, object]) -> None:
+        summary = message.get("name", "command")
+        timestamp = self._extract_timestamp(message)
+        entry = f"[CMD] {timestamp} — {summary}" if timestamp else f"[CMD] {summary}"
+        self._log_entries.addItem(entry)
+        if self._log_entries.count() > self._logitech_limit:
+            self._log_entries.takeItem(0)
 
-    def _reset_tag_controls(self, label: Optional[str] = None) -> None:
-        self._pending_tag_timestamp = None
-        self._tag_comment_edit.setText("")
-        _set_enabled(self._tag_comment_edit, False)
-        _set_enabled(self._tag_send_button, False)
-        self._tag_timestamp_label.setText(label or "Press Tagg to capture")
-
-    def _toggle_play(self) -> None:
-        if self._state.playing:
-            self._state.pause()
-            self.play_button.setText("Play")
-        else:
-            self._state.start()
-            self.play_button.setText("Pause")
-
-    def _on_tag_event(self, tag: dict) -> None:
-        if not isinstance(tag, dict):
-            return
-        tag_id = str(tag.get("id", "")).strip()
+    def _on_tag_event(self, message: Mapping[str, object]) -> None:
+        tag_id = str(message.get("id", "")).strip()
         if not tag_id:
             return
-        label = str(tag.get("label", tag_id)).strip() or tag_id
-        status = str(tag.get("status", "")).lower()
-        self._append_logitech_entry("TAG", tag, summary=f"{label} [{status or 'active'}]")
+        status = str(message.get("status", "")).lower()
+        label = message.get("label") or tag_id
+        summary = f"{label} ({tag_id})"
         if status == "deleted":
-            item = self._tag_items.pop(tag_id, None)
-            if item is not None:
-                row = self._tag_list.row(item)
-                self._tag_list.takeItem(row)
-            return
-        text = f"{label} ({tag_id})"
-        if tag_id in self._tag_items:
-            item = self._tag_items[tag_id]
-            item.setText(text)
+            self._tag_items.pop(tag_id, None)
+            self._tag_list.remove_by_data(tag_id)
         else:
-            item = QtWidgets.QListWidgetItem(text)
+            item = _ListItem(summary, tag_id)
             self._tag_items[tag_id] = item
-            self._tag_list.addItem(item)
-        item.setData(QtCore.Qt.UserRole, tag_id)
-
-    def _on_command_event(self, command: dict) -> None:
-        if not isinstance(command, dict):
-            return
-        name = str(command.get("name", "")) or "command"
-        payload = command.get("payload", {})
-        try:
-            payload_text = json.dumps(payload, sort_keys=True)
-        except TypeError:
-            payload_text = str(payload)
-        summary = f"{name}: {payload_text}" if payload_text else name
-        self._append_logitech_entry("CMD", command, summary=summary)
-
-    def _on_tag_selected(self, item: QtWidgets.QListWidgetItem) -> None:
-        if item is None:
-            return
-        tag_id = item.data(QtCore.Qt.UserRole)
-        if isinstance(tag_id, str):
-            self._state.seek_to_tag(tag_id)
-
-    def _on_seek(self) -> None:
-        self._state.seek(self.seek_input.text())
-
-    def _on_scrub_pressed(self) -> None:
-        self._scrubbing = True
-
-    def _on_scrub_released(self) -> None:
-        value = self._scrub_slider.value()
-        self._scrubbing = False
-        self._state.scrub_to_index(value)
-
-    def _update_metrics(self, metrics: PlayerMetrics) -> None:
-        self._metrics_label.setText(metrics.to_json())
-        if not self._scrubbing:
-            self._scrub_slider.blockSignals(True)
-            self._scrub_slider.setRange(0, max(0, metrics.timeline - 1))
-            self._scrub_slider.setValue(metrics.position if metrics.timeline else 0)
-            self._scrub_slider.blockSignals(False)
-
-    def _append_logitech_entry(
-        self,
-        category: str,
-        message: Mapping[str, object],
-        *,
-        summary: str,
-    ) -> None:
-        timestamp = self._extract_timestamp(message)
-        text = f"[{category}] {timestamp} — {summary}" if timestamp else f"[{category}] {summary}"
-        self._logitech_list.addItem(text)
-        if self._logitech_list.count() > self._logitech_limit:
-            self._logitech_list.takeItem(0)
+            self._tag_list.add_or_replace(summary, tag_id)
 
     @staticmethod
     def _extract_timestamp(message: Mapping[str, object]) -> str:
@@ -730,7 +665,7 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
                 return value
         epoch = message.get("recv_epoch_ms")
         if isinstance(epoch, (int, float)):
-            dt = datetime.fromtimestamp(float(epoch) / 1000.0)
+            dt = datetime.fromtimestamp(float(epoch) / 1000.0, tz=UTC)
             return dt.isoformat()
         return ""
 
@@ -835,6 +770,17 @@ def connect_in_memory(
 
 
 def ensure_offscreen(headless: bool) -> None:
-    if headless:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # Flet does not require special handling for headless execution, but the
+    # function remains for backwards compatibility with the old Qt entry point.
+    _ = headless
 
+
+__all__ = [
+    "HeadlessPlayerRunner",
+    "JetStreamPlayerWindow",
+    "PlayerMetrics",
+    "PlayerState",
+    "ReceiverFactory",
+    "connect_in_memory",
+    "ensure_offscreen",
+]

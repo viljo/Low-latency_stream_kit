@@ -1,21 +1,22 @@
-"""Entry point for the JetStream Player Qt application."""
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Callable, Mapping
 
-from PyQt5 import QtWidgets
+import flet as ft
 
 from tspi_kit.jetstream_client import JetStreamThreadedClient
 from tspi_kit.receiver import CompositeTSPIReceiver, TSPIReceiver
 from tspi_kit.tags import TagSender
-from tspi_kit.ui import HeadlessPlayerRunner, JetStreamPlayerWindow, UiConfig
-from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
+from tspi_kit.ui import HeadlessPlayerRunner, UiConfig
+from tspi_kit.ui.flet_app import PlayerViewConfig, mount_player
+from tspi_kit.ui.player import ReceiverFactory, connect_in_memory
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="JetStream Player")
+    parser = argparse.ArgumentParser(description="JetStream Player (Flet)")
     defaults = UiConfig()
     parser.add_argument("--headless", action="store_true", help="Run without a GUI")
     parser.add_argument("--metrics-interval", type=float, default=1.0)
@@ -78,6 +79,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _build_sources(
+    subject_map: Mapping[str, list[str]],
+    *,
+    nats_servers: list[str] | None,
+    js_stream: str,
+    historical_stream: str | None,
+    durable_prefix: str,
+) -> tuple[
+    Mapping[str, ReceiverFactory | TSPIReceiver | CompositeTSPIReceiver],
+    TagSender | None,
+    Callable[[], None],
+]:
+    js_client: JetStreamThreadedClient | None = None
+    tag_sender: TagSender | None = None
+    cleanup = lambda: None
+
+    if nats_servers:
+        js_client = JetStreamThreadedClient(nats_servers)
+        js_client.start()
+        receivers: dict[str, ReceiverFactory | TSPIReceiver | CompositeTSPIReceiver] = {}
+        for name, subjects in subject_map.items():
+            durable_base = f"{durable_prefix}-{name}"
+            stream_name = js_stream if name == "livestream" else historical_stream
+            receiver_list: list[TSPIReceiver] = []
+            for index, subject in enumerate(subjects):
+                durable = f"{durable_base}-{index}"
+                consumer = js_client.create_pull_consumer(subject, durable=durable, stream=stream_name)
+                receiver_list.append(TSPIReceiver(consumer))
+            if len(receiver_list) == 1:
+                receivers[name] = receiver_list[0]
+            else:
+                receivers[name] = CompositeTSPIReceiver(receiver_list)
+        tag_sender = TagSender(js_client.publisher(), sender_id="player-ui")
+
+        def _close() -> None:
+            js_client.close()
+
+        cleanup = _close
+        return receivers, tag_sender, cleanup
+
+    stream, factories = connect_in_memory(subject_map)
+    tag_sender = TagSender(stream, sender_id="player-ui")
+    return factories, tag_sender, cleanup
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     config = UiConfig(
@@ -88,43 +134,18 @@ def main(argv: list[str] | None = None) -> int:
         default_rate=args.rate,
         default_clock=args.clock,
     )
-    ensure_offscreen(args.headless)
     subject_map = {
         "livestream": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
         "replay.default": [f"player.{args.room}.playout.>", "tags.broadcast"],
     }
-    js_client: JetStreamThreadedClient | None = None
-    cleanup_required = False
 
-    tag_sender: TagSender | None = None
-
-    if args.nats_servers:
-        js_client = JetStreamThreadedClient(args.nats_servers)
-        js_client.start()
-        receivers = {}
-        for name, subjects in subject_map.items():
-            durable_prefix = f"{args.durable_prefix}-{name}"
-            stream_name = args.js_stream if name == "livestream" else args.historical_stream
-            receiver_list = []
-            for index, subject in enumerate(subjects):
-                durable = f"{durable_prefix}-{index}"
-                consumer = js_client.create_pull_consumer(subject, durable=durable, stream=stream_name)
-                receiver_list.append(TSPIReceiver(consumer))
-            if len(receiver_list) == 1:
-                receiver: TSPIReceiver = receiver_list[0]
-            else:
-                receiver = CompositeTSPIReceiver(receiver_list)
-            receivers[name] = receiver
-        sources = receivers
-        cleanup_required = True
-        tag_sender = TagSender(js_client.publisher(), sender_id="player-ui")
-    else:
-        stream, sources = connect_in_memory(subject_map)
-        tag_sender = TagSender(stream, sender_id="player-ui")
-
-    def _close_client() -> None:
-        if js_client is not None:
-            js_client.close()
+    sources, tag_sender, cleanup = _build_sources(
+        subject_map,
+        nats_servers=args.nats_servers,
+        js_stream=args.js_stream,
+        historical_stream=args.historical_stream,
+        durable_prefix=args.durable_prefix,
+    )
 
     if args.headless:
         runner = HeadlessPlayerRunner(
@@ -137,21 +158,17 @@ def main(argv: list[str] | None = None) -> int:
             initial_source=args.source,
         )
         runner.run()
-        if cleanup_required:
-            _close_client()
+        cleanup()
         return 0
 
-    app = QtWidgets.QApplication(sys.argv)
-    if cleanup_required:
-        app.aboutToQuit.connect(_close_client)
-    window = JetStreamPlayerWindow(
-        sources,
-        ui_config=config,
-        initial_source=args.source,
-        tag_sender=tag_sender,
-    )
-    window.show()
-    return app.exec()
+    view_config = PlayerViewConfig(ui=config, initial_source=args.source, tag_sender=tag_sender)
+
+    def _launch(page: ft.Page) -> None:
+        mount_player(page, sources, config=view_config)
+
+    ft.app(target=_launch)
+    cleanup()
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry
