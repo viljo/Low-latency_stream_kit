@@ -15,6 +15,7 @@ from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="JetStream Player")
+    defaults = UiConfig()
     parser.add_argument("--headless", action="store_true", help="Run without a GUI")
     parser.add_argument("--metrics-interval", type=float, default=1.0)
     parser.add_argument("--duration", type=float)
@@ -30,6 +31,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--room", type=str, default="default")
     parser.add_argument("--clock", choices=["receive", "tspi"], default="receive")
     parser.add_argument("--source", choices=["live", "historical"], default="live")
+    parser.add_argument(
+        "--smooth-center",
+        type=float,
+        default=defaults.smooth_center,
+        help="Smoothing factor applied to the map center (0.0-1.0).",
+    )
+    parser.add_argument(
+        "--smooth-zoom",
+        type=float,
+        default=defaults.smooth_zoom,
+        help="Smoothing factor applied to the map zoom level (0.0-1.0).",
+    )
+    parser.add_argument(
+        "--window-sec",
+        type=int,
+        default=defaults.window_sec,
+        help="Duration of telemetry retained for map previews (seconds).",
+    )
     parser.add_argument(
         "--nats-server",
         dest="nats_servers",
@@ -56,7 +75,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    config = UiConfig(metrics_interval=args.metrics_interval, default_rate=args.rate, default_clock=args.clock)
+    config = UiConfig(
+        smooth_center=args.smooth_center,
+        smooth_zoom=args.smooth_zoom,
+        window_sec=args.window_sec,
+        metrics_interval=args.metrics_interval,
+        default_rate=args.rate,
+        default_clock=args.clock,
+    )
     ensure_offscreen(args.headless)
     subject_map = {
         "live": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
