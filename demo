@@ -644,11 +644,13 @@ def main(argv: Iterable[str] | None = None) -> int:
 
                 command_cmd: List[str] = [
                     sys.executable,
-                    str(PROJECT_ROOT / "tspi_command_qt.py"),
+                    str(PROJECT_ROOT / "command_console_qt.py"),
                     "--sender-id",
                     "demo-ui",
                     "--js-stream",
                     "TSPI",
+                    "--ops-stream",
+                    "TSPI_OPS",
                     "--stream-prefix",
                     "tspi",
                 ]
