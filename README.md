@@ -8,6 +8,7 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 - **PCAP Replayer** – Utility to ingest 37-byte TSPI captures and push them into the JetStream pipeline for offline testing.
 - **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
+- **Channel Orchestration** – `tspi_kit.channels` implements the karaoke-style channel and replay specification, generating JetStream consumer configs, control payloads, and discovery listings for live, group replay, and private client channels.
 
 ## Getting Started
 ### Prerequisites
@@ -64,6 +65,17 @@ pip install -e .[ui]
 - Outputs UDP datagrams and/or publishes directly to JetStream (CBOR)
 - Headless metrics: frames generated, aircraft count, current rate (JSON on stdout)
 - UI mode can continuously regenerate batches via `--continuous/--no-continuous`
+
+### Channel helpers
+
+`tspi_kit.channels` provides the primitives described in [`docs/channels-replay-spec.md`](docs/channels-replay-spec.md):
+
+- `ChannelDirectory` tracks discoverable channels (`livestream`, operator-triggered group replays, and optional client-private replays).
+- `ChannelManager` emits the `GroupReplayStart`/`GroupReplayStop` control payloads and ensures the directory stays in sync when operators start or stop a replay.
+- `ChannelStatus` models the client heartbeat published to `tspi.ops.status`, while `live_consumer_config`/`replay_consumer_config` return the JetStream consumer definitions specified in the document.
+- `replay_advertisement_subjects()` exposes the subjects to retain in the auxiliary `TSPI_REPLAY` stream so late joiners can discover active channels.
+
+The helper module keeps the documented naming (`tspi.channel.*`) and timestamp conventions centralised so both the operator tooling and clients remain consistent.
 
 ## JSON Schema
 The Draft 2020-12 schema in `tspi.schema.json` enforces shared fields (`type`, `sensor_id`, `day`, `time_s`, `status`, `status_flags`) and payload-specific properties for geocentric and spherical telemetry. Validation is integrated into the receiver and exposed via `tspi_kit.schema.validate_payload`.

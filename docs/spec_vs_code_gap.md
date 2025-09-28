@@ -21,6 +21,7 @@ that still need attention.
 - ✅ The README's generator feature list now reflects the available styles and
   headless metrics output: `--style` toggles "normal" vs "airshow" formations
   and headless runs emit JSON metrics summarising frames, aircraft, and rate.【F:README.md†L61-L66】【F:tspi_generator_qt.py†L19-L148】【F:tspi_kit/generator.py†L10-L118】
+- ✅ The karaoke-style channel and replay specification now has a concrete implementation in `tspi_kit.channels`, and the README documents the helper APIs for operators and clients.【F:docs/channels-replay-spec.md†L1-L133】【F:tspi_kit/channels.py†L1-L295】【F:README.md†L9-L110】
 
 ## Outstanding inconsistencies
 
