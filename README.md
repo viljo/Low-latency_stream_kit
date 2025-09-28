@@ -4,10 +4,10 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 
 ## Features
 - **Producer** – UDP listener that parses TSPI datagrams, adds receive timestamps, and publishes CBOR payloads to JetStream with deduplication headers.
-- **Player/Receiver** – Single Qt5/CLI application that consumes JetStream telemetry, validates CBOR against the Draft 2020-12 schema, offers JSON/headless streaming, and provides live ↔ historical playback with timeline scrubbing, rate control, metrics, and smoothed map previews.
+- **Player/Receiver** – Single Qt5/CLI application that consumes JetStream telemetry, validates CBOR against the Draft 2020-12 schema, offers JSON/headless streaming, provides live ↔ historical playback with timeline scrubbing, rate control, metrics, and smoothed map previews, and now lets operators capture an instant UTC "Tagg" timestamp plus comment that is broadcast to every client and persisted in the datastore. Tags appear immediately in the live data stream as soon as the operator presses **Save/Send**, while datastore replays surface the same annotation when playback reaches the original tag timestamp.
 - **PCAP Replayer** – Utility to ingest 37-byte TSPI captures and push them into the JetStream pipeline for offline testing.
 - **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
-- **Command Console** – Operator workspace that issues broadcast commands and metadata (display units, marker colour, session metadata), launches or stops datastore-backed group replays, and visualises an active-client roster with client status, displays a live operations log (with incoming and outgoing status and command messages).
+- **Command Console** – Operator workspace that issues broadcast commands and metadata (display units, marker colour, session metadata), launches or stops datastore-backed group replays, visualises an active-client roster with client status, displays a live operations log (with incoming and outgoing status and command messages), and exposes the same "Tagg" workflow so administrators can drop timestamped comments straight into TimescaleDB.
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
 - **Channel Orchestration** – `tspi_kit.channels` implements the karaoke-style channel and replay specification, generating JetStream consumer configs, control payloads, and discovery listings for live, group replay, and private client channels.
 
@@ -59,6 +59,10 @@ pip install -e .[ui]
 - Optional JSON line output (`--json-stream/--no-json-stream`) for headless log pipelines
 - Timeline scrubber supports "YouTube-style" scrolling through buffered frames
 - Flags: `--headless`, `--source`, `--rate`, `--clock`, `--room`, `--metrics-interval`, `--exit-on-idle`
+- Shared **Tagg** workflow with the command console so local operators can
+  annotate the live timeline with a UTC timestamp and comment. Tags appear as
+  soon as they are saved during live viewing and replay at the captured time
+  when the session is played back from the datastore.
 
 ### tspi_generator_qt.py
 - Simulates geocentric TSPI for configurable fleet sizes
@@ -75,6 +79,9 @@ pip install -e .[ui]
 - Broadcasts session metadata updates (friendly name plus identifier) alongside
   units and marker colour commands for downstream clients so every receiver
   shows the current livestream context.
+- Provides a dedicated **Tagg** capture flow: press the button to freeze the
+  current UTC timestamp, type a comment, and broadcast it so the timeline tag is
+  visible immediately during live operations, persists in TimescaleDB, and reappears at the original timestamp when the session is replayed from the datastore.
 - Supports GUI and headless automation (`--headless`) for operational scripts.
 - Auto-provisions telemetry and operations streams when connected to JetStream
   and falls back to an in-memory broker for demos/tests.

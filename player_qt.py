@@ -9,6 +9,7 @@ from PyQt5 import QtWidgets
 
 from tspi_kit.jetstream_client import JetStreamThreadedClient
 from tspi_kit.receiver import CompositeTSPIReceiver, TSPIReceiver
+from tspi_kit.tags import TagSender
 from tspi_kit.ui import HeadlessPlayerRunner, JetStreamPlayerWindow, UiConfig
 from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
 
@@ -95,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     js_client: JetStreamThreadedClient | None = None
     cleanup_required = False
 
+    tag_sender: TagSender | None = None
+
     if args.nats_servers:
         js_client = JetStreamThreadedClient(args.nats_servers)
         js_client.start()
@@ -114,8 +117,10 @@ def main(argv: list[str] | None = None) -> int:
             receivers[name] = receiver
         sources = receivers
         cleanup_required = True
+        tag_sender = TagSender(js_client.publisher(), sender_id="player-ui")
     else:
         stream, sources = connect_in_memory(subject_map)
+        tag_sender = TagSender(stream, sender_id="player-ui")
 
     def _close_client() -> None:
         if js_client is not None:
@@ -139,7 +144,12 @@ def main(argv: list[str] | None = None) -> int:
     app = QtWidgets.QApplication(sys.argv)
     if cleanup_required:
         app.aboutToQuit.connect(_close_client)
-    window = JetStreamPlayerWindow(sources, ui_config=config, initial_source=args.source)
+    window = JetStreamPlayerWindow(
+        sources,
+        ui_config=config,
+        initial_source=args.source,
+        tag_sender=tag_sender,
+    )
     window.show()
     return app.exec()
 

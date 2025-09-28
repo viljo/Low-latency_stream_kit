@@ -14,7 +14,13 @@ The window is split into four regions:
    updating the marker highlight colour, and broadcasting session metadata
    (name plus identifier) for the active livestream. Session metadata is
    separate from timeline tags, which annotate a specific timestamp with an
-   operator comment.
+   operator comment. The controls now ship with a dedicated **Tagg** button
+  that freezes the current UTC timestamp, unlocks an adjacent comment field,
+  and publishes the note to JetStream and TimescaleDB when you press
+  **Save/Send**. Tags posted during live operations appear instantly across
+  connected consoles and receivers, while datastore playback surfaces the
+  annotation when the playhead reaches the original timestamp so the comment
+  aligns with the recorded event.
    The controls reuse the same headless automation flags so scripted workflows
    can reuse the UI entry point.
 2. **Group replay** – launch or stop datastore-backed group replays by first
@@ -118,6 +124,10 @@ python command_console_qt.py --nats-server nats://127.0.0.1:4222 \
   not already exist.
 * Use the **Display Units** dropdown or **Marker Colour** palette to send a
   command. Sent commands update the status banner and append an entry to the log.
+* Press **Tagg** to capture the current UTC timestamp, type a comment, and press
+  **Save/Send**. The console publishes the resulting tag immediately so live
+  viewers see it right away, and the datastore replay engine delays the
+  annotation until playback reaches the captured timestamp.
 * Heartbeats arriving on `tspi.ops.status` populate both the log and the active
   client table.
 
