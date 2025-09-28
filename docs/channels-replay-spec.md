@@ -99,6 +99,13 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
 **Status heartbeat**
 - On every channel change and periodically (e.g., 5s), publish to `tspi.ops.status` announcing the current channel
 
+**Tag creation**
+  - Both receivers and the command console expose a **Tagg** action: pressing the
+    button freezes the current UTC time, opens a comment field, and publishes the
+    tag on `tags.broadcast` once saved. The annotation is persisted in
+    TimescaleDB, appears immediately for live viewers, and is re-emitted at the
+    original timestamp during replay.
+
 ---
 
 ## 5) Operator behavior
@@ -111,6 +118,15 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
 - **Stop group replay**
   1) Delete (or let expire) `REPLAY_<identifier>` consumer
   2) Publish `GroupReplayStop` on `tspi.ops.ctrl`
+
+- **Capture an operations tag**
+  1) Press **Tagg** in the console to record the current UTC timestamp.
+  2) Enter an operator comment and press **Save/Send**.
+  3) The console publishes the tag on `tags.broadcast`, writes it to the
+     TimescaleDB `tags` table, and surfaces the timestamp across all receivers
+     immediately when live. During datastore playback the annotation is emitted
+     again when the playhead reaches the captured timestamp so recorded events
+     retain their original timing.
 
 Playback continues until the datastore chunk naturally ends or operators send
 `GroupReplayStop`.

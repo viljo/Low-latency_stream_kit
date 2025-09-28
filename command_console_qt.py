@@ -14,6 +14,7 @@ from tspi_kit.commands import (
 )
 from tspi_kit.commands import OPS_CONTROL_SUBJECT
 from tspi_kit.jetstream_client import JetStreamConsumerAdapter, JetStreamThreadedClient
+from tspi_kit.tags import TagPayload, TagSender
 from tspi_kit.ui.command_console import (
     ClientPresence,
     ClientPresenceTracker,
@@ -38,15 +39,29 @@ def _format_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
+def _set_enabled(widget, enabled: bool) -> None:
+    if hasattr(widget, "setEnabled"):
+        widget.setEnabled(enabled)  # type: ignore[attr-defined]
+    elif hasattr(widget, "setDisabled"):
+        widget.setDisabled(not enabled)  # type: ignore[attr-defined]
+
+
 class CommandController(QtCore.QObject):
     status_changed = QtCore.pyqtSignal(str)
     error_occurred = QtCore.pyqtSignal(str)
     group_replay_changed = QtCore.pyqtSignal(str)
 
-    def __init__(self, sender: CommandSender, ops_sender: OpsControlSender) -> None:
+    def __init__(
+        self,
+        sender: CommandSender,
+        ops_sender: OpsControlSender,
+        *,
+        tag_sender: TagSender | None = None,
+    ) -> None:
         super().__init__()
         self._sender = sender
         self._ops_sender = ops_sender
+        self._tag_sender = tag_sender
 
     def set_units(self, units: str) -> None:
         try:
@@ -98,6 +113,24 @@ class CommandController(QtCore.QObject):
             return
         self.group_replay_changed.emit("")
         self.status_changed.emit(f"Group replay stopped on {message.channel_id}")
+
+    @property
+    def tagging_enabled(self) -> bool:
+        return self._tag_sender is not None
+
+    def create_tag(self, timestamp: datetime, comment: str) -> TagPayload | None:
+        if self._tag_sender is None:
+            self.error_occurred.emit("Tagging is not configured")
+            return None
+        try:
+            payload = self._tag_sender.create_tag(comment, timestamp=timestamp)
+        except Exception as exc:  # pragma: no cover - surface to UI
+            self.error_occurred.emit(str(exc))
+            return None
+        self.status_changed.emit(
+            f"Tag recorded at {payload.ts} — {payload.label}"
+        )
+        return payload
 
 
 class ClientTableModel(QtCore.QAbstractTableModel):
@@ -224,6 +257,7 @@ class CommandWindow(QtWidgets.QWidget):
         self._current_tag: Optional[DataChunkTag] = None
         self._computed_identifier: Optional[str] = None
         self._computed_display_name: Optional[str] = None
+        self._pending_tag_timestamp: Optional[datetime] = None
 
         layout = QtWidgets.QVBoxLayout(self)
         controls = QtWidgets.QGroupBox("Display Controls", self)
@@ -255,6 +289,21 @@ class CommandWindow(QtWidgets.QWidget):
         controls_layout.addWidget(self._session_id_edit, 3, 1)
         metadata_button = QtWidgets.QPushButton("Broadcast Metadata", self)
         controls_layout.addWidget(metadata_button, 3, 2)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Tag Timestamp", self), 4, 0)
+        self._tag_timestamp_label = QtWidgets.QLabel("Press Tagg to capture", self)
+        controls_layout.addWidget(self._tag_timestamp_label, 4, 1)
+        self._tag_button = QtWidgets.QPushButton("Tagg", self)
+        controls_layout.addWidget(self._tag_button, 4, 2)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Tag Comment", self), 5, 0)
+        self._tag_comment_edit = QtWidgets.QLineEdit(self)
+        self._tag_comment_edit.setPlaceholderText("Enter operator comment")
+        _set_enabled(self._tag_comment_edit, False)
+        controls_layout.addWidget(self._tag_comment_edit, 5, 1)
+        self._tag_send_button = QtWidgets.QPushButton("Save/Send", self)
+        _set_enabled(self._tag_send_button, False)
+        controls_layout.addWidget(self._tag_send_button, 5, 2)
 
         layout.addWidget(controls)
 
@@ -337,6 +386,10 @@ class CommandWindow(QtWidgets.QWidget):
         units_button.clicked.connect(self._send_units)
         color_button.clicked.connect(self._send_color)
         metadata_button.clicked.connect(self._send_session_metadata)
+        self._tag_button.clicked.connect(self._capture_tag_timestamp)
+        self._tag_send_button.clicked.connect(self._send_tag_comment)
+
+        _set_enabled(self._tag_button, self._controller.tagging_enabled)
         self._start_replay_button.clicked.connect(self._start_group_replay)
         self._stop_replay_button.clicked.connect(self._stop_group_replay)
         controller.status_changed.connect(self._show_status)
@@ -381,6 +434,50 @@ class CommandWindow(QtWidgets.QWidget):
         name = self._session_name_edit.text().strip()
         identifier = self._session_id_edit.text().strip()
         self._controller.set_session_metadata(name, identifier)
+
+    def _capture_tag_timestamp(self) -> None:
+        if not self._controller.tagging_enabled:
+            self._show_error("Tagging is not configured")
+            return
+        timestamp = datetime.now(tz=UTC)
+        self._pending_tag_timestamp = timestamp
+        self._tag_timestamp_label.setText(_format_timestamp(timestamp))
+        _set_enabled(self._tag_comment_edit, True)
+        self._tag_comment_edit.setText("")
+        self._tag_comment_edit.setFocus()
+        _set_enabled(self._tag_send_button, True)
+
+    def _send_tag_comment(self) -> None:
+        if not self._controller.tagging_enabled:
+            self._show_error("Tagging is not configured")
+            return
+        if self._pending_tag_timestamp is None:
+            self._show_error("Press Tagg to capture a timestamp first")
+            return
+        comment = self._tag_comment_edit.text().strip()
+        if not comment:
+            self._show_error("Enter a tag comment before saving")
+            return
+        payload = self._controller.create_tag(self._pending_tag_timestamp, comment)
+        if payload is None:
+            return
+        iso_text = payload.ts
+        try:
+            cleaned = iso_text
+            if cleaned.endswith("Z") and "+" not in cleaned:
+                cleaned = cleaned[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(cleaned)
+            parsed = parsed.astimezone(UTC)
+        except ValueError:
+            parsed = datetime.now(tz=UTC)
+        self._reset_tag_capture(f"Tagged {_format_timestamp(parsed)}")
+
+    def _reset_tag_capture(self, message: Optional[str] = None) -> None:
+        self._pending_tag_timestamp = None
+        self._tag_comment_edit.setText("")
+        _set_enabled(self._tag_comment_edit, False)
+        _set_enabled(self._tag_send_button, False)
+        self._tag_timestamp_label.setText(message or "Press Tagg to capture")
 
     def _apply_chunk_selection(self, index: int) -> None:
         if index <= 0:
@@ -583,6 +680,8 @@ def main(argv: List[str] | None = None) -> int:
     js_client: JetStreamThreadedClient | None = None
     status_consumer = None
 
+    tag_sender: TagSender | None = None
+
     if args.nats_servers:
         js_client = JetStreamThreadedClient(args.nats_servers)
         js_client.start()
@@ -599,6 +698,7 @@ def main(argv: List[str] | None = None) -> int:
             ops_stream=args.ops_stream,
         )
         publisher = js_client.publisher()
+        tag_sender = TagSender(publisher, sender_id=args.sender_id)
     else:
         stream, _ = connect_in_memory(
             {
@@ -611,6 +711,7 @@ def main(argv: List[str] | None = None) -> int:
             }
         )
         publisher = stream
+        tag_sender = TagSender(stream, sender_id=args.sender_id)
         try:
             status_consumer = stream.create_consumer(args.status_subject)
         except Exception:
@@ -657,7 +758,7 @@ def main(argv: List[str] | None = None) -> int:
     app = QtWidgets.QApplication(sys.argv)
     if js_client is not None:
         app.aboutToQuit.connect(js_client.close)
-    controller = CommandController(sender, ops_sender)
+    controller = CommandController(sender, ops_sender, tag_sender=tag_sender)
     window = CommandWindow(
         controller,
         status_consumer=status_consumer,

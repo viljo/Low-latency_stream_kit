@@ -11,6 +11,7 @@ from .generator import FlightConfig, TSPIFlightGenerator
 from .datastore import TimescaleDatastore, MessageRecord, TagRecord
 from .archiver import Archiver
 from .commands import CommandSender, CommandPayload, COMMAND_SUBJECT_PREFIX
+from .tags import TagPayload, TagSender, TAG_BROADCAST_SUBJECT
 from .replayer import StoreReplayer
 from .channels import (
     ChannelDescriptor,
@@ -65,6 +66,9 @@ __all__ = [
     "CommandSender",
     "CommandPayload",
     "COMMAND_SUBJECT_PREFIX",
+    "TagSender",
+    "TagPayload",
+    "TAG_BROADCAST_SUBJECT",
     "StoreReplayer",
     "ChannelDescriptor",
     "ChannelDirectory",

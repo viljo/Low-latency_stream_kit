@@ -61,6 +61,11 @@
   * Timeline scrubber ("YouTube" style) maintains a rolling history window for rewind/playhead jumps.
   * Headless mode offers JSON line streaming to integrate with log pipelines.
   * Commands apply immediately and cache global state (units, marker color, session metadata).
+  * Operators can press **Tagg** to capture the current UTC timestamp, enter a
+    free-form comment, and broadcast it as a collaborative tag. Live viewers see
+    the annotation immediately after it is saved, and the entry persists in
+    TimescaleDB so datastore replays emit it again when playback reaches the
+    original timestamp.
   * Tags display new annotations and support "seek to tag" for replay.
   * Command and tag panes only reflect events observed after startup; there is no TimescaleDB bootstrap step.
   * When operators seek or scrub forward through historical data, the player replays every command and tag that occurred between the previous playhead and the new target before resuming telemetry frames.

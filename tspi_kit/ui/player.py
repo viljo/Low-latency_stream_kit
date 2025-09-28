@@ -5,7 +5,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -15,10 +15,18 @@ from PyQt5 import QtCore, QtWidgets
 from ..jetstream_sim import InMemoryJetStream
 from ..receiver import CompositeTSPIReceiver, TSPIReceiver
 from ..schema import validate_payload
+from ..tags import TagSender
 from .config import UiConfig
 from .map import MapPreviewWidget, MapSmoother
 
 ReceiverFactory = Callable[[], TSPIReceiver | CompositeTSPIReceiver]
+
+
+def _set_enabled(widget, enabled: bool) -> None:
+    if hasattr(widget, "setEnabled"):
+        widget.setEnabled(enabled)  # type: ignore[attr-defined]
+    elif hasattr(widget, "setDisabled"):
+        widget.setDisabled(not enabled)  # type: ignore[attr-defined]
 
 
 @dataclass(slots=True)
@@ -456,6 +464,7 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         *,
         ui_config: Optional[UiConfig] = None,
         initial_source: str = "live",
+        tag_sender: Optional[TagSender] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -474,6 +483,8 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
             initial_source=initial_source,
             map_widget=self._map,
         )
+        self._tag_sender = tag_sender
+        self._pending_tag_timestamp: datetime | None = None
         self._scrubbing = False
         self._tag_items: Dict[str, QtWidgets.QListWidgetItem] = {}
         self._logitech_limit = 200
@@ -532,6 +543,20 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         self._marker_label = QtWidgets.QLabel("Marker: #00ff00", self)
         status_layout.addWidget(self._marker_label)
 
+        tag_layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(tag_layout)
+        self._tag_button = QtWidgets.QPushButton("Tagg", self)
+        tag_layout.addWidget(self._tag_button)
+        self._tag_timestamp_label = QtWidgets.QLabel("Press Tagg to capture", self)
+        tag_layout.addWidget(self._tag_timestamp_label)
+        self._tag_comment_edit = QtWidgets.QLineEdit(self)
+        self._tag_comment_edit.setPlaceholderText("Enter comment")
+        _set_enabled(self._tag_comment_edit, False)
+        tag_layout.addWidget(self._tag_comment_edit)
+        self._tag_send_button = QtWidgets.QPushButton("Save/Send", self)
+        _set_enabled(self._tag_send_button, False)
+        tag_layout.addWidget(self._tag_send_button)
+
         self._scrub_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
         self._scrub_slider.setRange(0, 0)
         layout.addWidget(self._scrub_slider)
@@ -542,6 +567,11 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._metrics_label)
 
         self._state.metrics_updated.connect(self._update_metrics)
+
+        self._tag_button.clicked.connect(self._capture_tag_timestamp)
+        self._tag_send_button.clicked.connect(self._send_tag_comment)
+        _set_enabled(self._tag_button, self._tag_sender is not None)
+        self._reset_tag_controls()
 
         logitech_layout = QtWidgets.QVBoxLayout()
         layout.addLayout(logitech_layout)
@@ -569,6 +599,44 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
 
     def _update_marker_color(self, color: str) -> None:
         self._marker_label.setText(f"Marker: {color}")
+
+    def _capture_tag_timestamp(self) -> None:
+        if self._tag_sender is None:
+            return
+        timestamp = datetime.now(tz=UTC)
+        self._pending_tag_timestamp = timestamp
+        self._tag_timestamp_label.setText(timestamp.strftime("%Y-%m-%d %H:%M:%SZ"))
+        _set_enabled(self._tag_comment_edit, True)
+        self._tag_comment_edit.setText("")
+        self._tag_comment_edit.setFocus()
+        _set_enabled(self._tag_send_button, True)
+
+    def _send_tag_comment(self) -> None:
+        if self._tag_sender is None or self._pending_tag_timestamp is None:
+            return
+        comment = self._tag_comment_edit.text().strip()
+        if not comment:
+            return
+        try:
+            payload = self._tag_sender.create_tag(
+                comment,
+                timestamp=self._pending_tag_timestamp,
+            )
+        except Exception as exc:
+            self._append_logitech_entry(
+                "TAG",
+                {"ts": self._pending_tag_timestamp.isoformat()},
+                summary=f"Tag send failed: {exc}",
+            )
+            return
+        self._reset_tag_controls(f"Tagged {payload.ts}")
+
+    def _reset_tag_controls(self, label: Optional[str] = None) -> None:
+        self._pending_tag_timestamp = None
+        self._tag_comment_edit.setText("")
+        _set_enabled(self._tag_comment_edit, False)
+        _set_enabled(self._tag_send_button, False)
+        self._tag_timestamp_label.setText(label or "Press Tagg to capture")
 
     def _toggle_play(self) -> None:
         if self._state.playing:
