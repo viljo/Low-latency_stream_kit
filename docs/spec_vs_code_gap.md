@@ -23,6 +23,7 @@ that still need attention.
   and headless runs emit JSON metrics summarising frames, aircraft, and rate.【F:README.md†L61-L66】【F:tspi_generator_flet.py†L19-L148】【F:tspi_kit/generator.py†L10-L118】
 - ✅ The karaoke-style channel and replay specification now has a concrete implementation in `tspi_kit.channels`, and the README documents the helper APIs for operators and clients.【F:docs/channels-replay-spec.md†L1-L133】【F:tspi_kit/channels.py†L1-L295】【F:README.md†L9-L110】
 - ✅ The README's testing guidance now covers the Flet harness and UI tests that ship with the repository.【F:README.md†L97-L99】
+- ✅ Channel heartbeat payloads now expose the optional operator, source IP, and ping fields promised in the channel specification and console documentation.【F:docs/channels-replay-spec.md†L65-L104】【F:docs/command_console.md†L96-L121】【F:tspi_kit/channels.py†L235-L274】
 
 ## Outstanding inconsistencies
 

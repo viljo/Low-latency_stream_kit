@@ -92,6 +92,9 @@ def test_channel_status_serialises_to_dict() -> None:
         channel=channel,
         override=False,
         timestamp="2025-09-28T11:00:00Z",
+        operator="viljo",
+        source_ip="203.0.113.10",
+        ping_ms=12.5,
     )
     payload = status.to_dict()
     assert payload["client_id"] == "alice"
@@ -100,6 +103,9 @@ def test_channel_status_serialises_to_dict() -> None:
     assert payload["subject"] == channel.subject
     assert payload["override"] is False
     assert payload["ts"] == "2025-09-28T11:00:00Z"
+    assert payload["operator"] == "viljo"
+    assert payload["source_ip"] == "203.0.113.10"
+    assert payload["ping_ms"] == pytest.approx(12.5)
 
 
 def test_consumer_config_helpers() -> None:
