@@ -26,7 +26,7 @@ standard `venv` module.
 ```bash
 uv sync --all-extras
 # Run commands inside the environment without activating it manually
-uv run python demo  # or: uv run python producer.py
+uv run demo         # or: uv run python producer.py
 # Convenience wrapper that performs the sync + run in one step
 ./run_demo.sh
 ```

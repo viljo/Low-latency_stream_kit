@@ -58,3 +58,4 @@ py-modules = [
     "tspi_generator_flet",
     "command_console_flet",
 ]
+script-files = ["demo"]
