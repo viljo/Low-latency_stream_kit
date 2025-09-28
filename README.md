@@ -18,6 +18,19 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 - Optional GUI tooling: install with the `ui` extra for the Flet desktop UI
 
 ### Installation
+You can manage dependencies with either [`uv`](https://docs.astral.sh/uv/) or the
+standard `venv` module.
+
+**Using `uv` (recommended for local development):**
+
+```bash
+uv sync --all-extras
+# Run commands inside the environment without activating it manually
+uv run python demo  # or: uv run python producer.py
+```
+
+**Using ``venv``:**
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -25,6 +38,12 @@ pip install -e .[test]
 # For GUI components
 pip install -e .[ui]
 ```
+
+> [!NOTE]
+> Running commands such as `python3 demo` without `uv run` or an activated
+> virtual environment will use the system interpreter, which does not contain the
+> project dependencies (for example, `jsonschema`). Always invoke tools through
+> `uv run …` or an activated virtual environment.
 
 ### Quick Start
 
