@@ -60,14 +60,34 @@ def ensure_python_version() -> None:
         raise RuntimeError("Python 3.11 or newer is required to run the demo helper script.")
 
 
-def ensure_command(command: str, *, apt_package: str | None = None) -> None:
+def ensure_command(
+    command: str,
+    *,
+    apt_package: str | None = None,
+    brew_package: str | None = None,
+) -> None:
     if shutil.which(command):
         return
     if apt_package and shutil.which("apt-get"):
         install_with_apt(apt_package)
         if shutil.which(command):
             return
-    raise RuntimeError(f"Required command '{command}' is not available on PATH.")
+    if brew_package and shutil.which("brew"):
+        install_with_brew(brew_package)
+        if shutil.which(command):
+            return
+    hints = []
+    if apt_package:
+        hints.append(f"`apt-get install {apt_package}`")
+    if brew_package:
+        hints.append(f"`brew install {brew_package}`")
+    if hints:
+        hint_message = " Install it via " + " or ".join(hints) + "."
+    else:
+        hint_message = ""
+    raise RuntimeError(
+        f"Required command '{command}' is not available on PATH.{hint_message}"
+    )
 
 
 def install_with_apt(package: str) -> None:
@@ -78,6 +98,10 @@ def install_with_apt(package: str) -> None:
         subprocess.run(["apt-get", "update"], check=True, env=env, stdout=subprocess.DEVNULL)
         APT_UPDATED = True
     subprocess.run(["apt-get", "install", "-y", package], check=True, env=env)
+
+
+def install_with_brew(package: str) -> None:
+    subprocess.run(["brew", "install", package], check=True)
 
 
 def read_requirements(path: Path) -> List[Tuple[str, str]]:
@@ -493,7 +517,11 @@ class TimescaleHACluster:
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(list(argv) if argv is not None else None)
     ensure_python_version()
-    ensure_command("nats-server", apt_package="nats-server")
+    ensure_command(
+        "nats-server",
+        apt_package="nats-server",
+        brew_package="nats-server",
+    )
     requirements_path = PROJECT_ROOT / "requirements.txt"
     if requirements_path.exists():
         ensure_python_dependencies(requirements_path)
