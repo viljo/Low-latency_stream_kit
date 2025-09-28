@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Mapping, Optional
 
-import flet as ft
+try:
+    import flet as ft
+except ModuleNotFoundError:  # pragma: no cover - exercised when optional dep missing
+    ft = None  # type: ignore[assignment]
 
 from ..receiver import CompositeTSPIReceiver, TSPIReceiver
 from ..tags import TagSender
@@ -23,6 +27,21 @@ class PlayerViewConfig:
     tag_sender: Optional[TagSender] = None
 
 
+def _ensure_flet() -> ModuleType:
+    """Return the imported :mod:`flet` module or raise a helpful error."""
+
+    global ft
+    if ft is None:  # pragma: no cover - exercised when optional dep missing
+        try:
+            import flet as _ft
+        except ModuleNotFoundError as exc:  # pragma: no cover - same as above
+            raise ModuleNotFoundError(
+                "The optional dependency 'flet' is required for the JetStream player UI."
+            ) from exc
+        ft = _ft
+    return ft
+
+
 class JetStreamPlayerApp:
     """Build and manage the JetStream player inside a Flet page."""
 
@@ -33,6 +52,7 @@ class JetStreamPlayerApp:
         *,
         config: Optional[PlayerViewConfig] = None,
     ) -> None:
+        _ensure_flet()
         self.page = page
         cfg = config or PlayerViewConfig(ui=UiConfig())
         self._tag_sender = cfg.tag_sender
