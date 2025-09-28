@@ -27,6 +27,8 @@ standard `venv` module.
 uv sync --all-extras
 # Run commands inside the environment without activating it manually
 uv run python demo  # or: uv run python producer.py
+# Convenience wrapper that performs the sync + run in one step
+./run_demo.sh
 ```
 
 **Using ``venv``:**
@@ -141,7 +143,8 @@ generator UI in continuous mode, and opens the unified receiver/player UI agains
 that infrastructure. Run it from the repository root:
 
 ```bash
-./demo
+# Ensures dependencies are available (prefers uv, falls back to .venv if present)
+./run_demo.sh
 ```
 
 Use `--duration` to stop automatically after a fixed interval or `Ctrl+C` to exit
