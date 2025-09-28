@@ -6,6 +6,15 @@ from typing import Any, Dict
 
 import cbor2
 
+try:  # pragma: no cover - optional import for graceful degradation
+    from nats.errors import TimeoutError as NATSTimeoutError
+except Exception:  # pragma: no cover - nats not available during type checking
+    NATSTimeoutError = None  # type: ignore[assignment]
+try:  # pragma: no cover - optional import for JetStream specific timeout
+    from nats.js.errors import TimeoutError as JSNATSTimeoutError
+except Exception:  # pragma: no cover - nats not available during type checking
+    JSNATSTimeoutError = None  # type: ignore[assignment]
+
 from .commands import COMMAND_SUBJECT_PREFIX
 from .datastore import TimescaleDatastore
 
@@ -55,8 +64,17 @@ class Archiver:
             await self.start()
 
         stored = 0
+        timeout_exceptions: tuple[type[BaseException], ...] = (TimeoutError,)
+        if isinstance(NATSTimeoutError, type):
+            timeout_exceptions += (NATSTimeoutError,)
+        if isinstance(JSNATSTimeoutError, type):
+            timeout_exceptions += (JSNATSTimeoutError,)
+
         for kind, subscription in self._subscriptions.items():
-            messages = await subscription.fetch(batch_size, timeout=self._pull_timeout)
+            try:
+                messages = await subscription.fetch(batch_size, timeout=self._pull_timeout)
+            except timeout_exceptions:
+                continue
             for message in messages:
                 payload = cbor2.loads(message.data)
                 timestamp = self._message_timestamp(message)
