@@ -72,10 +72,10 @@ The Draft 2020-12 schema in `tspi.schema.json` enforces shared fields (`type`, `
 ```bash
 pytest
 ```
-Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Qt5 GUI/headless behaviour. Run `pytest -k ui` to focus on interface validation driven by `pytest-qt`.
+Tests cover datagram parsing for both message types, schema validation, non-UI integration flows, and Qt5 GUI/headless behaviour. A lightweight stub of the `pytest-qt` plugin ships with the repo so UI tests can execute without the real Qt event loop; install the `ui` extra if you want to exercise the applications against an actual Qt runtime. Run `pytest -k ui` to focus on the interface-oriented checks.
 
 ## Offline Maps
-Map previews currently use placeholder widgets. Final integration will use PyQtWebEngine/OSM tiles with configurable smoothing (`--smooth-center`, `--smooth-zoom`, `--window-sec`) exposed via shared UI configuration (`tspi_kit.ui.app.UiConfig`). Headless modes remain fully operational without map assets.
+Map previews currently use placeholder widgets. Planned PyQtWebEngine/OSM integration will reuse the existing `UiConfig` dataclass (`tspi_kit.ui.config.UiConfig`) which already exposes smoothing parameters such as `smooth_center`, `smooth_zoom`, and `window_sec`; these values are presently configured programmatically rather than through CLI flags. Headless modes remain fully operational without map assets.
 
 ## License
 Apache License 2.0 — see `LICENSE`.
