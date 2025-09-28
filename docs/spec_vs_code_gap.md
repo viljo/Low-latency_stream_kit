@@ -4,7 +4,7 @@
 The current repository diverges from the published specifications in several key areas. Installation instructions reference packaging metadata that is not present, several JetStream integration features remain unimplemented, and the generator CLI cannot fulfil the documented UDP workflow. The sections below capture the gaps that still need to be addressed.
 
 ## Installation & Packaging
-- ❌ The README directs contributors to install the toolkit via `pip install -e .[test]`, implying editable mode support backed by a `pyproject.toml` or equivalent packaging file.【F:README.md†L17-L36】 The repository root, however, does not ship any packaging metadata (no `pyproject.toml`, `setup.cfg`, or `setup.py`), so the editable install instructions cannot succeed as written.【fed0aa†L1-L4】
+- ✅ The README directs contributors to install the toolkit via `pip install -e .[test]`, implying editable mode support backed by a `pyproject.toml` or equivalent packaging file.【F:README.md†L17-L36】 The repository now includes a modern `pyproject.toml` that defines the package metadata, dependencies, and extras required by the documentation, allowing editable installs to succeed as described.【F:pyproject.toml†L1-L68】
 
 ## TSPI Generator CLI
 - ❌ The README advertises that the TSPI generator can target “UDP datagrams and/or publishes directly to JetStream.”【F:README.md†L54-L71】 In practice the CLI only exposes JetStream connectivity (or the in-memory simulator); there are no arguments for UDP targets or sockets in `tspi_generator_qt.py`, so the UDP output path described in the spec is missing.【F:tspi_generator_qt.py†L1-L92】
