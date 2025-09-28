@@ -8,8 +8,8 @@ cd "${SCRIPT_DIR}"
 if command -v uv >/dev/null 2>&1; then
   echo "[run_demo] Detected 'uv'; ensuring dependencies are synced (including extras)..." >&2
   uv sync --all-extras
-  echo "[run_demo] Launching demo via 'uv run demo'" >&2
-  exec uv run demo "$@"
+  echo "[run_demo] Launching demo via 'uv run -- python ./demo'" >&2
+  exec uv run -- python ./demo "$@"
 fi
 
 if [ -x .venv/bin/python ]; then
