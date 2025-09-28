@@ -7,11 +7,43 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
+from nats import errors as nats_errors
 from nats.aio.client import Client as NATS
-try:
-    from nats.errors import ErrNoServers, TimeoutError
-except ImportError:  # pragma: no cover - compatibility with newer nats-py
-    from nats.errors import NoServersError as ErrNoServers, TimeoutError  # type: ignore[attr-defined]
+
+ErrNoServers = getattr(nats_errors, "ErrNoServers", nats_errors.NoServersError)
+TimeoutError = getattr(
+    nats_errors, "TimeoutError", getattr(nats_errors, "ErrTimeout", asyncio.TimeoutError)
+)
+
+
+def normalize_stream_subjects(subjects: Sequence[str]) -> List[str]:
+    """Remove redundant subjects that are already covered by broader wildcards."""
+
+    entries: List[tuple[str, tuple[str, ...], tuple[str, ...] | None]] = []
+    for subject in subjects:
+        tokens = tuple(subject.split("."))
+        tail_prefix: tuple[str, ...] | None = None
+        if tokens and tokens[-1] == ">":
+            tail_prefix = tokens[:-1]
+        entries.append((subject, tokens, tail_prefix))
+
+    normalized: List[str] = []
+    for index, (subject, tokens, _tail_prefix) in enumerate(entries):
+        covered = False
+        for other_index, (_, _, other_tail_prefix) in enumerate(entries):
+            if index == other_index:
+                continue
+            if other_tail_prefix is None:
+                continue
+            if len(tokens) < len(other_tail_prefix):
+                continue
+            if tokens[: len(other_tail_prefix)] == other_tail_prefix:
+                covered = True
+                break
+        if not covered:
+            normalized.append(subject)
+    return normalized
+
 from nats.js.errors import NotFoundError
 
 
@@ -171,7 +203,7 @@ class JetStreamThreadedClient:
             return
         except NotFoundError:
             pass
-        config = {"name": name, "subjects": list(subjects)}
+        config = {"name": name, "subjects": normalize_stream_subjects(list(subjects))}
         if num_replicas is not None:
             config["num_replicas"] = num_replicas
         await self._js.add_stream(**config)
@@ -202,4 +234,5 @@ __all__ = [
     "JetStreamConsumerAdapter",
     "JetStreamPublisherAdapter",
     "JetStreamThreadedClient",
+    "normalize_stream_subjects",
 ]
