@@ -35,12 +35,11 @@ def test_live_channel_descriptor() -> None:
 
 def test_group_replay_channel_descriptor_roundtrip() -> None:
     ts = datetime(2025, 9, 28, 11, 0, 0, tzinfo=timezone.utc)
-    channel = group_replay_channel(ts, end=ts.replace(minute=5))
+    channel = group_replay_channel(ts)
     assert channel.channel_id == "replay.20250928T110000Z"
     assert channel.subject == "tspi.channel.replay.20250928T110000Z"
     assert channel.display_name == "replay 2025-09-28T11:00:00Z"
-    assert channel.start == "2025-09-28T11:00:00Z"
-    assert channel.end == "2025-09-28T11:05:00Z"
+    assert channel.identifier == "2025-09-28T11:00:00Z"
 
 
 def test_private_channel_descriptor_validation() -> None:
@@ -111,6 +110,13 @@ def test_consumer_config_helpers() -> None:
     assert replay_config["deliver_subject"] == replay.subject
     assert replay_config["replay_policy"] == "original"
     assert replay_config["description"].startswith("Group replay")
+    assert replay_config["deliver_policy"] == "by_start_time"
+
+
+def test_replay_consumer_config_for_tag_identifier() -> None:
+    replay = group_replay_channel("Intercept Window 3")
+    replay_config = replay_consumer_config(replay)
+    assert replay_config["deliver_policy"] == "deliver_new"
 
 
 def test_replay_advertisement_subjects_match_spec() -> None:

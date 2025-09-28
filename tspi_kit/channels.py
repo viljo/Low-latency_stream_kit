@@ -9,6 +9,7 @@ client state machine.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -89,8 +90,7 @@ class ChannelDescriptor:
     display_name: str
     kind: ChannelKind
     stream: str = TSPI_STREAM
-    start: Optional[str] = None
-    end: Optional[str] = None
+    identifier: Optional[str] = None
 
     def to_dict(self) -> Dict[str, object]:
         data: Dict[str, object] = {
@@ -100,10 +100,8 @@ class ChannelDescriptor:
             "kind": self.kind.value,
             "stream": self.stream,
         }
-        if self.start is not None:
-            data["start"] = self.start
-        if self.end is not None:
-            data["end"] = self.end
+        if self.identifier is not None:
+            data["identifier"] = self.identifier
         return data
 
 
@@ -118,37 +116,79 @@ def live_channel() -> ChannelDescriptor:
     )
 
 
+def _slugify_identifier(identifier: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", identifier.strip())
+    slug = slug.strip("-")
+    if not slug:
+        raise ValueError("Replay identifier must contain alphanumeric characters")
+    return slug.lower()
+
+
 def group_replay_channel(
-    start: datetime | str | float,
+    identifier: datetime | str | float,
     *,
-    end: datetime | str | float | None = None,
     stream: str = TSPI_STREAM,
+    display_name: Optional[str] = None,
 ) -> ChannelDescriptor:
     """Return the descriptor for a group replay channel.
 
     Parameters
     ----------
-    start:
-        Starting timestamp for the replay window.
-    end:
-        Optional end timestamp if the operator pre-computed the replay window.
+    identifier:
+        Tag, human-readable label, or timestamp that uniquely identifies the replay source.
     stream:
         JetStream stream backing the replay. Defaults to ``TSPI``.
+    display_name:
+        Optional label to surface to operators and receivers. Defaults to the identifier.
     """
 
-    start_dt = _parse_timestamp(start)
-    start_iso = _isoformat(start_dt)
-    channel_suffix = _channel_suffix(start_dt)
-    end_iso = _isoformat(_parse_timestamp(end)) if end is not None else None
+    resolved_identifier: Optional[str] = None
+    channel_suffix: Optional[str] = None
+
+    if isinstance(identifier, (datetime, float, int)):
+        dt = _parse_timestamp(identifier)
+        resolved_identifier = _isoformat(dt)
+        channel_suffix = _channel_suffix(dt)
+        default_display = f"replay {resolved_identifier}"
+    else:
+        text = str(identifier).strip()
+        if not text:
+            raise ValueError("Replay identifier must be a non-empty string")
+        # Attempt to interpret ISO-formatted timestamps so existing workflows continue to work.
+        try:
+            dt = _parse_timestamp(text)
+        except Exception:
+            dt = None
+        if dt is not None:
+            resolved_identifier = _isoformat(dt)
+            channel_suffix = _channel_suffix(dt)
+            default_display = f"replay {resolved_identifier}"
+        else:
+            resolved_identifier = text
+            slug = _slugify_identifier(text)
+            channel_suffix = slug
+            default_display = text
+
+    display = display_name.strip() if isinstance(display_name, str) and display_name.strip() else default_display
+
     return ChannelDescriptor(
         channel_id=f"replay.{channel_suffix}",
         subject=f"{REPLAY_SUBJECT_PREFIX}.{channel_suffix}",
-        display_name=f"replay {start_iso}",
+        display_name=display,
         kind=ChannelKind.GROUP_REPLAY,
         stream=stream,
-        start=start_iso,
-        end=end_iso,
+        identifier=resolved_identifier,
     )
+
+
+def _identifier_implies_start(identifier: Optional[str]) -> bool:
+    if not identifier:
+        return False
+    try:
+        _parse_timestamp(identifier)
+    except Exception:
+        return False
+    return True
 
 
 def private_channel(
@@ -183,11 +223,10 @@ class GroupReplayStartMessage:
             "type": "GroupReplayStart",
             "channel_id": self.channel.channel_id,
             "display_name": self.channel.display_name,
-            "start": self.channel.start,
             "stream": self.channel.stream,
         }
-        if self.channel.end is not None:
-            payload["end"] = self.channel.end
+        if self.channel.identifier is not None:
+            payload["identifier"] = self.channel.identifier
         return payload
 
 
@@ -282,12 +321,12 @@ class ChannelManager:
 
     def start_group_replay(
         self,
-        start: datetime | str | float,
+        identifier: datetime | str | float,
         *,
-        end: datetime | str | float | None = None,
         stream: str = TSPI_STREAM,
+        display_name: Optional[str] = None,
     ) -> GroupReplayStartMessage:
-        channel = group_replay_channel(start, end=end, stream=stream)
+        channel = group_replay_channel(identifier, stream=stream, display_name=display_name)
         self._directory.upsert(channel)
         self._active_group = channel.channel_id
         return GroupReplayStartMessage(channel)
@@ -344,7 +383,7 @@ def replay_consumer_config(channel: ChannelDescriptor) -> Dict[str, object]:
     config = {
         "stream": channel.stream,
         "deliver_subject": channel.subject,
-        "deliver_policy": "by_start_time" if channel.start else "deliver_new",
+        "deliver_policy": "by_start_time" if _identifier_implies_start(channel.identifier) else "deliver_new",
         "replay_policy": "original",
         "ack_policy": "none",
         "flow_control": True,

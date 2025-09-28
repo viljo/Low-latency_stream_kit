@@ -7,6 +7,7 @@ Open-source Python toolkit for working with FMV BAPS Realtime TSPI v4 telemetry.
 - **Player/Receiver** – Single Qt5/CLI application that consumes JetStream telemetry, validates CBOR against the Draft 2020-12 schema, offers JSON/headless streaming, and provides live ↔ historical playback with timeline scrubbing, rate control, metrics, and smoothed map previews.
 - **PCAP Replayer** – Utility to ingest 37-byte TSPI captures and push them into the JetStream pipeline for offline testing.
 - **TSPI Generator** – Synthetic flight track generator (normal or airshow) targeting UDP or JetStream outputs with configurable fleet size/rates and headless automation.
+- **Command Console** – Operator workspace that issues broadcast commands and metadata (display units, marker colour, session metadata), launches or stops datastore-backed group replays, and visualises an active-client roster with client status, displays a live operations log (with incoming and outgoing status and command messages).
 - **Schema & Tests** – Draft 2020-12 schema (`tspi.schema.json`) and pytest suite covering datagram parsing and schema validation.
 - **Channel Orchestration** – `tspi_kit.channels` implements the karaoke-style channel and replay specification, generating JetStream consumer configs, control payloads, and discovery listings for live, group replay, and private client channels.
 
@@ -65,6 +66,20 @@ pip install -e .[ui]
 - Outputs UDP datagrams and/or publishes directly to JetStream (CBOR)
 - Headless metrics: frames generated, aircraft count, current rate (JSON on stdout)
 - UI mode can continuously regenerate batches via `--continuous/--no-continuous`
+
+### command_console_qt.py
+- Administrator-facing console for issuing live commands to receivers.
+- Adds an operations view with events recieved from clients and commands sent to clients.
+- Displays active clients in a sortable table including streaming channel,
+  streaming status, connection time, last seen, user login name, and ping roundtrip delay.
+- Broadcasts session metadata updates (friendly name plus identifier) alongside
+  units and marker colour commands for downstream clients so every receiver
+  shows the current livestream context.
+- Supports GUI and headless automation (`--headless`) for operational scripts.
+- Auto-provisions telemetry and operations streams when connected to JetStream
+  and falls back to an in-memory broker for demos/tests.
+- can enable select and issue a replay from datastore for all clients
+- See [`docs/command_console.md`](docs/command_console.md) for usage examples.
 
 ### Channel helpers
 

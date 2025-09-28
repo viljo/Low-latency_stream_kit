@@ -15,10 +15,10 @@
 
 ### Subjects (human‑facing “channels”)
 - **Live channel (default):** `tspi.channel.livestream`
-- **Group replay channels (admin):** `tspi.channel.replay.<YYYYMMDDTHHMMSSZ>`
+- **Group replay channels (admin):** `tspi.channel.replay.<identifier>` where `<identifier>` comes from the datastore tag or timestamp chosen for playback.
 - **Private client channels (optional/advertised):** `tspi.channel.client.<clientId>.<sessionId>`
 
-> Display names: `livestream`, `replay 2025-09-28T11:00:00Z`, `client viljo/3f19`
+> Display names: `livestream`, `replay 2025-09-28T11:00:00Z`, `replay Intercept Window 3`, `client viljo/3f19`
 
 ### Streams (JetStream)
 - **`TSPI`** — existing stream that ingests live telemetry (`tspi.geocentric.*`, `tspi.spherical.*`).
@@ -41,10 +41,10 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
   - `AckPolicy`: `AckNone`
   - Enable `FlowControl` + `IdleHeartbeat`
 
-- **REPLAY_<ts> (admin‑triggered)**
+- **REPLAY_<identifier> (admin‑triggered)**
   - Stream: `TSPI`
-  - `DeliverSubject`: `tspi.channel.replay.<YYYYMMDDTHHMMSSZ>`
-  - `DeliverPolicy`: `DeliverByStartTime` (or `ByStartSequence`)
+  - `DeliverSubject`: `tspi.channel.replay.<identifier>`
+  - `DeliverPolicy`: `DeliverByStartTime` (or `ByStartSequence`) configured from the datastore reference captured in the identifier/tag
   - **`ReplayPolicy`: `ReplayOriginal`** (server‑paced)
   - `AckPolicy`: `AckNone`
   - `FlowControl` + `IdleHeartbeat`
@@ -69,8 +69,10 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
   - Request: `tspi.channel.list.req` (client sends with `reply=<inbox>`)
   - Response: list of active channels (see §6B)
 
-- **Client status heartbeat → operator:** `tspi.ops.status`  
-  Announces `{client_id, state, channel_id, subject, override, ts}`
+- **Client status heartbeat → operator:** `tspi.ops.status`
+  Announces `{client_id, state, channel_id, subject, override, ts, operator?, source_ip?, ping_ms?}`
+  and is persisted in the `TSPI_OPS` stream so the command console can surface
+  connection/replay/live-view events alongside the active-client roster.
 
 ---
 
@@ -78,20 +80,20 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
 
 **States**
 - `FOLLOWING_LIVESTREAM` — subscribed to `tspi.channel.livestream`
-- `FOLLOWING_GROUP_REPLAY(channel=<ts>)`
+- `FOLLOWING_GROUP_REPLAY(channel=<identifier>)`
 - `FOLLOWING_PRIVATE_REPLAY(channel=<clientId>.<sessionId>)`
 - `LIVE_OVERRIDE` — same as `FOLLOWING_LIVESTREAM`, but while a group replay is active
 
 **Transitions**
 - **On `GroupReplayStart`**:
-  - If on `FOLLOWING_LIVESTREAM` → auto‑switch to new `replay.<ts>` channel
+  - If on `FOLLOWING_LIVESTREAM` → auto‑switch to new `replay.<identifier>` channel
   - If on `FOLLOWING_PRIVATE_REPLAY` → **do not** switch; show prompt “Join group replay?”
 - **Override (Back to Live)**: from any replay → switch to `livestream`
 - **On `GroupReplayStop`**: clients in that group replay → back to `livestream`; private replay clients unchanged
 
 **Channels list UI**
 - Always shows: `livestream`
-- Shows active: `replay.<ts>` (admin) and `client.<id>.<session>` (public/private, as policy)
+- Shows active: `replay.<identifier>` (admin) and `client.<id>.<session>` (public/private, as policy)
 - Selecting a channel subscribes to its subject
 
 **Status heartbeat**
@@ -102,13 +104,27 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
 ## 5) Operator behavior
 
 - **Start group replay**
-  1) Create `REPLAY_<ts>` push consumer on `TSPI` with `ReplayOriginal`, delivering to `tspi.channel.replay.<ts>`
+  1) Create `REPLAY_<identifier>` push consumer on `TSPI` with `ReplayOriginal`, delivering to `tspi.channel.replay.<identifier>`
   2) Publish `GroupReplayStart` on `tspi.ops.ctrl`
   3) Optionally advertise channel to directory / ensure `TSPI_REPLAY` exists
 
 - **Stop group replay**
-  1) Delete (or let expire) `REPLAY_<ts>` consumer
+  1) Delete (or let expire) `REPLAY_<identifier>` consumer
   2) Publish `GroupReplayStop` on `tspi.ops.ctrl`
+
+Playback continues until the datastore chunk naturally ends or operators send
+`GroupReplayStop`.
+
+> The administrator command console automates steps 1 and 2 by emitting the
+> `GroupReplayStart`/`Stop` control payloads alongside a datastore identifier and
+> stream target, ensuring every receiver joins the datastore replay in lockstep
+> until the administrator stops the session.
+>
+> The GUI workflow requires operators to choose the datastore recording first,
+> then select a startpoint via a timeline slider or a named tag before pressing
+> **Play**. The resulting identifier captures both the recording metadata and
+> startpoint so downstream systems can derive a unique channel subject for each
+> replay.
 
 ---
 
@@ -122,8 +138,7 @@ All consumers are **push** with **original‑rate replay** and low‑overhead ac
   "type": "GroupReplayStart",
   "channel_id": "replay.20250928T110000Z",
   "display_name": "replay 2025-09-28T11:00:00Z",
-  "start": "2025-09-28T11:00:00Z",
-  "end": "2025-09-28T11:05:00Z",
+  "identifier": "2025-09-28T11:00:00Z",
   "stream": "TSPI"
 }
 

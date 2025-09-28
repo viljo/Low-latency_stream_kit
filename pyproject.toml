@@ -45,7 +45,7 @@ ui = [
 tspi-producer = "producer:main"
 tspi-player = "player_qt:main"
 tspi-generator = "tspi_generator_qt:main"
-tspi-command-console = "tspi_command_qt:main"
+command-console = "command_console_qt:main"
 
 [tool.setuptools.packages.find]
 include = ["tspi_kit"]
@@ -58,5 +58,5 @@ py-modules = [
     "producer",
     "player_qt",
     "tspi_generator_qt",
-    "tspi_command_qt",
+    "command_console_qt",
 ]
