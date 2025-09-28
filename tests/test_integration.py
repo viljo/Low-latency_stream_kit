@@ -18,6 +18,7 @@ from tspi_kit import (
     TSPIProducer,
     TSPIReceiver,
 )
+from tspi_kit.datagrams import parse_tspi_datagram
 
 
 def _build_geocentric_datagram(
@@ -142,6 +143,24 @@ def test_generator_pipeline_throughput_and_ranges() -> None:
     time_values = [m["time_s"] for m in messages]
     assert all(time_values[i] <= time_values[i + 1] for i in range(len(time_values) - 1))
 
+
+def test_generator_airshow_style_profiles() -> None:
+    config = FlightConfig(count=4, rate_hz=10.0, style="airshow")
+    generator = TSPIFlightGenerator(config)
+
+    datagrams = list(generator.generate(5))
+    assert len(datagrams) == config.count * 5
+
+    parsed = [parse_tspi_datagram(packet) for packet, _ in datagrams]
+    speeds = [
+        (p.payload["vx_mps"] ** 2 + p.payload["vy_mps"] ** 2 + p.payload["vz_mps"] ** 2) ** 0.5
+        for p in parsed
+    ]
+    assert min(speeds) >= config.speed_min_mps - 1
+    assert max(speeds) <= config.speed_max_mps + 5
+
+    altitudes = [p.payload["z_m"] for p in parsed]
+    assert max(altitudes) - min(altitudes) > 100
 
 def test_deduplication_enforced() -> None:
     jetstream, producer, receiver = _create_pipeline()

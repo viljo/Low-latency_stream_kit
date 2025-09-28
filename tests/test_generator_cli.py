@@ -1,15 +1,18 @@
 """Tests for the TSPI generator CLI argument parsing."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from tspi_generator_qt import parse_args
+from tspi_generator_qt import main, parse_args
 
 
 def test_parse_args_defaults() -> None:
     args = parse_args([])
     assert args.jetstream is True
     assert args.udp_targets == []
+    assert args.style == "normal"
 
 
 def test_parse_args_udp_targets() -> None:
@@ -26,3 +29,34 @@ def test_parse_args_requires_output() -> None:
 def test_parse_args_invalid_udp_target() -> None:
     with pytest.raises(SystemExit):
         parse_args(["--udp-target", "bad-target"])
+
+
+def test_parse_args_custom_style() -> None:
+    args = parse_args(["--style", "airshow"])
+    assert args.style == "airshow"
+
+
+def test_headless_metrics_output(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = main(
+        [
+            "--headless",
+            "--duration",
+            "0.05",
+            "--count",
+            "3",
+            "--rate",
+            "5",
+            "--style",
+            "airshow",
+            "--no-jetstream",
+            "--udp-target",
+            "127.0.0.1:45000",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out, "Headless run should emit metrics"
+    payload = json.loads(out[-1])
+    assert payload["frames_generated"] >= 0
+    assert payload["aircraft"] == 3
+    assert payload["rate"] == pytest.approx(5)

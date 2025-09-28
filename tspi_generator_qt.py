@@ -27,6 +27,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Continuously regenerate telemetry when running with the UI.",
     )
     parser.add_argument(
+        "--style",
+        choices=("normal", "airshow"),
+        default="normal",
+        help="Flight formation style to generate.",
+    )
+    parser.add_argument(
         "--nats-server",
         dest="nats_servers",
         action="append",
@@ -113,14 +119,14 @@ class _MultiOutputProducer:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from tspi_kit.jetstream_client import JetStreamThreadedClient
-
     args = parse_args(argv)
     ensure_offscreen(args.headless)
-    js_client: JetStreamThreadedClient | None = None
+    js_client = None
     publisher = None
     if args.jetstream:
         if args.nats_servers:
+            from tspi_kit.jetstream_client import JetStreamThreadedClient
+
             js_client = JetStreamThreadedClient(args.nats_servers)
             js_client.start()
             subjects = [
@@ -142,11 +148,12 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
     producer = _MultiOutputProducer(jetstream_producer, args.udp_targets)
-    config = FlightConfig(count=args.count, rate_hz=args.rate)
+    config = FlightConfig(count=args.count, rate_hz=args.rate, style=args.style)
     generator = TSPIFlightGenerator(config)
     controller = GeneratorController(generator, producer)
 
     if args.headless:
+        controller.metrics_updated.connect(lambda payload: print(payload, flush=True))
         controller.run(args.duration)
         producer.close()
         if js_client is not None:
