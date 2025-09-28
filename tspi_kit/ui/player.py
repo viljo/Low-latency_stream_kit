@@ -77,6 +77,7 @@ class PlayerState(QtCore.QObject):
         self._position = 0
         self._history_limit = max(1, ui_config.scrub_history_size)
         self._tags: Dict[str, dict] = {}
+        self._sideband_cursor = 0
         self._metrics = PlayerMetrics(
             clock=ui_config.default_clock,
             rate=ui_config.default_rate,
@@ -181,6 +182,7 @@ class PlayerState(QtCore.QObject):
         self._current_source = name
         self._timeline.clear()
         self._position = 0
+        self._sideband_cursor = 0
         self._metrics.frames = 0
         self._metrics.lag = 0
         self._metrics.source = name
@@ -200,11 +202,13 @@ class PlayerState(QtCore.QObject):
             self._timer.stop()
 
     def seek(self, iso_timestamp: str) -> None:
+        previous = self._position
         try:
             target = datetime.fromisoformat(iso_timestamp)
         except ValueError:
             return
         target_epoch = target.timestamp()
+        new_position = self._position
         for index, message in enumerate(self._timeline):
             recv_iso = message.get("recv_iso")
             if not recv_iso:
@@ -214,9 +218,12 @@ class PlayerState(QtCore.QObject):
             except ValueError:
                 continue
             if recv_epoch >= target_epoch:
-                self._position = index
-                self._metrics.position = self._position
+                new_position = index
                 break
+        if new_position != self._position:
+            self._position = new_position
+            self._metrics.position = self._position
+            self._handle_jump(previous, self._position)
         self._emit_metrics(force=True)
 
     def preload(self, batch: int = 50) -> None:
@@ -242,14 +249,17 @@ class PlayerState(QtCore.QObject):
             drop = len(self._timeline) - self._history_limit
             del self._timeline[:drop]
             self._position = max(0, self._position - drop)
+            self._sideband_cursor = max(0, self._sideband_cursor - drop)
         self._emit_metrics(force=True)
 
     def scrub_to_index(self, index: int) -> None:
         if not self._timeline:
             return
+        previous = self._position
         index = max(0, min(index, len(self._timeline) - 1))
         self._position = index
         self._metrics.position = self._position
+        self._handle_jump(previous, self._position)
         self._emit_metrics(force=True)
 
     def timeline_length(self) -> int:
@@ -272,7 +282,28 @@ class PlayerState(QtCore.QObject):
         self._metrics.position = self._position
         self._metrics.timeline = len(self._timeline)
         self._handle_message(message)
+        self._sideband_cursor = max(self._sideband_cursor, self._position)
         self._emit_metrics()
+
+    def _handle_jump(self, previous: int, current: int) -> None:
+        if current > previous:
+            self._replay_sideband(previous, current)
+            self._sideband_cursor = current
+        elif current < previous:
+            self._sideband_cursor = min(self._sideband_cursor, current)
+
+    def _replay_sideband(self, start: int, end: int) -> None:
+        if end <= start:
+            return
+        start = max(0, start)
+        end = min(end, len(self._timeline))
+        for message in self._timeline[start:end]:
+            if not isinstance(message, dict):
+                continue
+            if "cmd_id" in message:
+                self._handle_command(message)
+            elif self._is_tag_event(message):
+                self._handle_tag(message)
 
     def _handle_message(self, message: dict) -> None:
         if not isinstance(message, dict):

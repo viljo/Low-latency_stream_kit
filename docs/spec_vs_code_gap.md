@@ -15,16 +15,11 @@ that still need attention.
 - ✅ Player components subscribe to `tags.broadcast` and route tag events through
   `PlayerState._handle_tag`, matching the JetStream change specification's requirement
   for collaborative tag support.【F:docs/player_receiver_jetstream.md†L51-L70】【F:player_qt.py†L38-L70】【F:tspi_kit/ui/player.py†L151-L343】
+- ✅ The player specification now reflects in-session command/tag history: it no
+  longer promises a TimescaleDB bootstrap and documents the forward-seek replay
+  behaviour implemented in `PlayerState`.【F:docs/player_receiver_jetstream.md†L51-L80】【F:tspi_kit/ui/player.py†L151-L367】
 
 ## Outstanding inconsistencies
-
-### TimescaleDB bootstrap for the player
-The JetStream change specification still mandates that the player "query TimescaleDB for
-the latest command and recent tags" during startup.【F:docs/player_receiver_jetstream.md†L58-L66】
-Neither `player_qt.py` nor the underlying `PlayerState` touch `TimescaleDatastore` or issue
-any database calls—they construct JetStream consumers only and maintain in-memory tag state
-populated from live subjects.【F:player_qt.py†L15-L109】【F:tspi_kit/ui/player.py†L140-L367】
-As a result, the documented datastore bootstrap remains unimplemented.
 
 ### README generator feature list
 The README still advertises generator "Styles: `normal` and `airshow`" and
@@ -36,6 +31,6 @@ current feature set.
 
 ## Summary
 Packaging and JetStream publishing behaviour now match the published documentation, and
-collaborative tag handling is wired up as specified. The remaining misalignments centre
-on TimescaleDB bootstrapping for the player and the README's lingering claims about
-multiple generator styles and headless metrics output.
+collaborative tag handling is wired up as specified. Remaining misalignments are limited
+to the README's lingering claims about multiple generator styles and headless metrics
+output.

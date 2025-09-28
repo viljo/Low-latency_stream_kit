@@ -60,7 +60,9 @@
   * Headless mode offers JSON line streaming to integrate with log pipelines.
   * Commands apply immediately and cache global state (units, marker color, ...).
   * Tags display new annotations and support "seek to tag" for replay.
-* On startup, query TimescaleDB for the latest command and recent tags.
+  * Command and tag panes only reflect events observed after startup; there is no TimescaleDB bootstrap step.
+  * When operators seek or scrub forward through historical data, the player replays every command and tag that occurred between the previous playhead and the new target before resuming telemetry frames.
+  * Historical playout feeds must include the commands and tags that precede a selected start point so the player can emit them before the first telemetry frame at that position.
 * Command messages share the same JetStream stream as TSPI telemetry to guarantee that archival and replay reproduce the exact sequence of events.
   * Conversion for display only (DB remains SI units):
     * Altitude: metres ↔ feet.

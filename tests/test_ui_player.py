@@ -205,3 +205,81 @@ def test_player_handles_tag_events(qtbot):
 
     assert "tag-42" not in window.state.tags
     assert window._tag_list.count() == 0
+
+
+def test_forward_jump_replays_commands_and_tags(qtbot):
+    stream = InMemoryJetStream()
+    producer = TSPIProducer(stream)
+    sender = CommandSender(stream, sender_id="test-ui")
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+    header_fmt = ">BBHHIBH"
+    payload_fmt = ">iii hhh hhh".replace(" ", "")
+
+    def build_datagram(sequence: int) -> bytes:
+        header = struct.pack(
+            header_fmt,
+            0xC1,
+            4,
+            900,
+            200,
+            10_000 + sequence * 500,
+            0xFF,
+            0x01,
+        )
+        payload = struct.pack(
+            payload_fmt,
+            int(100.0 * 1),
+            int(200.0 * 1),
+            int(300.0 * 1),
+            int(10.0 * 100),
+            int(5.0 * 100),
+            int(2.0 * 100),
+            int(0.5 * 100),
+            int(0.25 * 100),
+            int(0.1 * 100),
+        )
+        return header + payload
+
+    producer.ingest(build_datagram(0), recv_time=base.timestamp())
+    command_payload = sender.send_units("imperial")
+
+    tag_payload = {
+        "id": "tag-forward",
+        "ts": (base.replace(hour=1)).isoformat(),
+        "label": "Forward jump",
+        "status": "active",
+    }
+    stream.publish("tags.broadcast", cbor2.dumps(tag_payload))
+
+    producer.ingest(build_datagram(1), recv_time=base.timestamp() + 1)
+
+    consumer = stream.create_consumer(">")
+    receiver = TSPIReceiver(consumer)
+    window = JetStreamPlayerWindow(receiver)
+    qtbot.addWidget(window)
+
+    commands: list[dict] = []
+    tags: list[dict] = []
+    window.state.command_event.connect(commands.append)
+    window.state.tag_event.connect(tags.append)
+
+    window.state.preload(batch=10)
+
+    # Jump forward before playback begins to prime state.
+    window.state.scrub_to_index(window.state.timeline_length() - 1)
+    assert commands and commands[-1]["cmd_id"] == command_payload.cmd_id
+    assert tags and tags[-1]["id"] == tag_payload["id"]
+
+    commands.clear()
+    tags.clear()
+
+    # Return to the start, process the first telemetry frame, then skip ahead again.
+    window.state.scrub_to_index(0)
+    window.state.start()
+    window.step_once()
+    window.state.pause()
+    window.state.scrub_to_index(window.state.timeline_length() - 1)
+
+    assert commands and commands[-1]["cmd_id"] == command_payload.cmd_id
+    assert tags and tags[-1]["id"] == tag_payload["id"]
