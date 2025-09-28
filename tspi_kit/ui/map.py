@@ -1,14 +1,18 @@
-"""Map preview helpers with smoothing support."""
+"""Map smoothing helpers used by the player UI."""
 from __future__ import annotations
+
+"""Map smoothing helpers used by the Flet player UI."""
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from PyQt5 import QtCore, QtWidgets
+from .signals import Signal
 
 
 @dataclass(slots=True)
 class MapState:
+    """Represents the smoothed map position and zoom."""
+
     center: Tuple[float, float] = (0.0, 0.0)
     zoom: float = 1.0
 
@@ -32,7 +36,6 @@ class MapSmoother:
     def update(self, center: Tuple[float, float], zoom: float) -> MapState:
         if self._state is None:
             self._state = MapState()
-
         cx = self._smooth_center * self._state.center[0] + (1 - self._smooth_center) * center[0]
         cy = self._smooth_center * self._state.center[1] + (1 - self._smooth_center) * center[1]
         z = self._smooth_zoom * self._state.zoom + (1 - self._smooth_zoom) * zoom
@@ -40,22 +43,16 @@ class MapSmoother:
         return self._state
 
 
-class MapPreviewWidget(QtWidgets.QWidget):
-    """Lightweight widget that stores smoothed map state for tests."""
+class MapPreviewWidget:
+    """Headless-friendly map preview that records smoothing state."""
 
-    state_changed = QtCore.pyqtSignal(MapState)
-
-    def __init__(self, smoother: MapSmoother, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
+    def __init__(self, smoother: MapSmoother) -> None:
         self._smoother = smoother
-        layout = QtWidgets.QVBoxLayout(self)
-        self._position_label = QtWidgets.QLabel("Map Preview", self)
-        layout.addWidget(self._position_label)
+        self._state = smoother.state
         self._marker_color = "#00ff00"
-        self._marker_label = QtWidgets.QLabel("Marker: #00ff00", self)
-        layout.addWidget(self._marker_label)
-        self._state = self._smoother.state
-        self._update_position_label()
+        self.state_changed: Signal[MapState] = Signal()
+        self.position_text = self._format_position()
+        self.marker_text = self._format_marker()
 
     @property
     def state(self) -> MapState:
@@ -67,7 +64,7 @@ class MapPreviewWidget(QtWidgets.QWidget):
 
     def apply_position(self, center: Tuple[float, float], zoom: float) -> MapState:
         self._state = self._smoother.update(center, zoom)
-        self._update_position_label()
+        self.position_text = self._format_position()
         self.state_changed.emit(self._state)
         return self._state
 
@@ -75,10 +72,14 @@ class MapPreviewWidget(QtWidgets.QWidget):
         if not color:
             return
         self._marker_color = color
-        self._marker_label.setText(f"Marker: {color}")
+        self.marker_text = self._format_marker()
 
-    def _update_position_label(self) -> None:
+    def _format_position(self) -> str:
         center_x, center_y = self._state.center
-        self._position_label.setText(
-            f"Center: {center_x:.2f}, {center_y:.2f} | Zoom: {self._state.zoom:.2f}"
-        )
+        return f"Center: {center_x:.2f}, {center_y:.2f} | Zoom: {self._state.zoom:.2f}"
+
+    def _format_marker(self) -> str:
+        return f"Marker: {self._marker_color}"
+
+
+__all__ = ["MapPreviewWidget", "MapSmoother", "MapState"]

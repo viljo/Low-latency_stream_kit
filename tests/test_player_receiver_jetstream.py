@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import struct
 from datetime import datetime, timezone
+import struct
 
 import pytest
 
@@ -46,8 +47,7 @@ def _build_geocentric_datagram(
     return header + payload
 
 
-@pytest.mark.qt_no_exception_capture
-def test_player_state_switches_sources_and_scrubs(qtbot) -> None:
+def test_player_state_switches_sources_and_scrubs() -> None:
     stream = InMemoryJetStream()
     live_producer = TSPIProducer(stream)
     historical_producer = TSPIProducer(stream, stream_prefix="player.training.playout")
@@ -85,48 +85,45 @@ def test_player_state_switches_sources_and_scrubs(qtbot) -> None:
     }
 
     state = PlayerState(sources, ui_config=UiConfig())
-    try:
-        state.preload(batch=10)
-        assert state.buffer_size() == 3
-        snapshot = state.buffer_snapshot()
-        assert snapshot[0]["sensor_id"] == 700
-        first_iso = snapshot[0]["recv_iso"]
-        expected_iso = datetime.fromtimestamp(base_epoch, tz=timezone.utc).isoformat()
-        assert first_iso == expected_iso
-        assert datetime.fromisoformat(first_iso).timestamp() == pytest.approx(base_epoch)
-        assert snapshot[0]["recv_epoch_ms"] == int(round(base_epoch * 1000))
+    state.preload(batch=10)
+    assert state.buffer_size() == 3
+    snapshot = state.buffer_snapshot()
+    assert snapshot[0]["sensor_id"] == 700
+    first_iso = snapshot[0]["recv_iso"]
+    expected_iso = datetime.fromtimestamp(base_epoch, tz=timezone.utc).isoformat()
+    assert first_iso == expected_iso
+    assert datetime.fromisoformat(first_iso).timestamp() == pytest.approx(base_epoch)
+    assert snapshot[0]["recv_epoch_ms"] == int(round(base_epoch * 1000))
 
-        state.start()
-        for _ in range(3):
-            state.step_once()
-        state.pause()
-
-        assert state.buffer_size() == 0
-        assert state.timeline_length() == 3
-        assert state._metrics.frames == 3
-
-        state.set_channel("replay.default")
-        state.preload(batch=10)
-        assert state.current_channel == "replay.default"
-        assert state.buffer_size() == 2
-        assert state.timeline_length() == 2
-
-        state.start()
+    state.start()
+    for _ in range(3):
         state.step_once()
-        state.pause()
-        assert state.position() == 1
+    state.pause()
 
-        state.scrub_to_index(0)
-        assert state.position() == 0
-        assert state.buffer_size() == 2
+    assert state.buffer_size() == 0
+    assert state.timeline_length() == 3
+    assert state._metrics.frames == 3
 
-        state.seek(snapshot[0]["recv_iso"])
-        assert state.position() == 0  # no matching ISO in historical dataset
+    state.set_channel("replay.default")
+    state.preload(batch=10)
+    assert state.current_channel == "replay.default"
+    assert state.buffer_size() == 2
+    assert state.timeline_length() == 2
 
-        # Ensure live and historical subjects were published correctly.
-        assert any(message.subject == "tspi.geocentric.700" for message in stream._messages)
-        assert any(
-            message.subject == "player.training.playout.geocentric.701" for message in stream._messages
-        )
-    finally:
-        state.deleteLater()
+    state.start()
+    state.step_once()
+    state.pause()
+    assert state.position() == 1
+
+    state.scrub_to_index(0)
+    assert state.position() == 0
+    assert state.buffer_size() == 2
+
+    state.seek(snapshot[0]["recv_iso"])
+    assert state.position() == 0  # no matching ISO in historical dataset
+
+    # Ensure live and historical subjects were published correctly.
+    assert any(message.subject == "tspi.geocentric.700" for message in stream._messages)
+    assert any(
+        message.subject == "player.training.playout.geocentric.701" for message in stream._messages
+    )

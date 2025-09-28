@@ -1,6 +1,6 @@
 # Command Console
 
-The command console (`command_console_qt.py`) gives administrators a unified
+The command console (`command_console_flet.py`) gives administrators a unified
 workspace for broadcasting display commands, watching client activity, and
 reviewing operational events. It wraps the `CommandSender` helper in a PyQt5
 GUI while continuously tailing the `tspi.ops.status` heartbeat feed to populate
@@ -116,7 +116,7 @@ operators can correlate activity with specific workstations or accounts.
 ### GUI mode (default)
 
 ```bash
-python command_console_qt.py --nats-server nats://127.0.0.1:4222 \
+python command_console_flet.py --nats-server nats://127.0.0.1:4222 \
     --js-stream TSPI --ops-stream TSPI_OPS --stream-prefix tspi
 ```
 
@@ -134,7 +134,7 @@ python command_console_qt.py --nats-server nats://127.0.0.1:4222 \
 ### Headless mode
 
 ```bash
-python command_console_qt.py --headless --nats-server nats://127.0.0.1:4222 \
+python command_console_flet.py --headless --nats-server nats://127.0.0.1:4222 \
     --units metric --marker-color "#ff8800" --session-name "Falcon Lead" --session-id 42 \
     --group-replay-id "Intercept Window 3"
 ```

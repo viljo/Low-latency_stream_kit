@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from tspi_generator_qt import main, parse_args
+from tspi_generator_flet import main, parse_args
 
 
 def test_parse_args_defaults() -> None:

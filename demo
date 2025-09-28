@@ -609,7 +609,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
                 generator_cmd: List[str] = [
                     sys.executable,
-                    str(PROJECT_ROOT / "tspi_generator_qt.py"),
+                    str(PROJECT_ROOT / "tspi_generator_flet.py"),
                     "--count",
                     str(args.count),
                     "--rate",
@@ -627,7 +627,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
                 player_cmd: List[str] = [
                     sys.executable,
-                    str(PROJECT_ROOT / "player_qt.py"),
+                    str(PROJECT_ROOT / "player_flet.py"),
                     "--metrics-interval",
                     "1.0",
                     "--room",
@@ -644,7 +644,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
                 command_cmd: List[str] = [
                     sys.executable,
-                    str(PROJECT_ROOT / "command_console_qt.py"),
+                    str(PROJECT_ROOT / "command_console_flet.py"),
                     "--sender-id",
                     "demo-ui",
                     "--js-stream",
