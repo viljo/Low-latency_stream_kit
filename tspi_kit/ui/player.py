@@ -7,18 +7,18 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional
+from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from jsonschema import exceptions as jsonschema_exceptions
 from PyQt5 import QtCore, QtWidgets
 
 from ..jetstream_sim import InMemoryJetStream
-from ..receiver import TSPIReceiver
+from ..receiver import CompositeTSPIReceiver, TSPIReceiver
 from ..schema import validate_payload
 from .config import UiConfig
 from .map import MapPreviewWidget, MapSmoother
 
-ReceiverFactory = Callable[[], TSPIReceiver]
+ReceiverFactory = Callable[[], TSPIReceiver | CompositeTSPIReceiver]
 
 
 @dataclass(slots=True)
@@ -51,6 +51,7 @@ class PlayerState(QtCore.QObject):
     metrics_updated = QtCore.pyqtSignal(PlayerMetrics)
     display_units_changed = QtCore.pyqtSignal(str)
     marker_color_changed = QtCore.pyqtSignal(str)
+    command_event = QtCore.pyqtSignal(object)
     tag_event = QtCore.pyqtSignal(object)
 
     def __init__(
@@ -98,7 +99,7 @@ class PlayerState(QtCore.QObject):
     ) -> Dict[str, ReceiverFactory]:
         normalized: Dict[str, ReceiverFactory] = {}
         for name, source in sources.items():
-            if isinstance(source, TSPIReceiver):
+            if isinstance(source, (TSPIReceiver, CompositeTSPIReceiver)):
                 receiver = source
 
                 def _factory(receiver=receiver) -> TSPIReceiver:
@@ -109,7 +110,7 @@ class PlayerState(QtCore.QObject):
 
                 def _factory(factory=source) -> TSPIReceiver:  # type: ignore[valid-type]
                     value = factory()
-                    if not isinstance(value, TSPIReceiver):
+                    if not isinstance(value, (TSPIReceiver, CompositeTSPIReceiver)):
                         raise TypeError("Receiver factory must return TSPIReceiver")
                     return value
 
@@ -301,6 +302,7 @@ class PlayerState(QtCore.QObject):
                 if self._map_widget:
                     self._map_widget.set_marker_color(color)
                 self.marker_color_changed.emit(color)
+        self.command_event.emit(dict(message))
 
     def _handle_tag(self, message: dict) -> None:
         tag_id = str(message.get("id", "")).strip()
@@ -401,9 +403,11 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
         )
         self._scrubbing = False
         self._tag_items: Dict[str, QtWidgets.QListWidgetItem] = {}
+        self._logitech_limit = 200
         self._build_ui()
         self._state.display_units_changed.connect(self._update_units)
         self._state.marker_color_changed.connect(self._update_marker_color)
+        self._state.command_event.connect(self._on_command_event)
         self._state.tag_event.connect(self._on_tag_event)
         self._update_units(self._state.display_units)
         self._update_marker_color(self._state.marker_color)
@@ -466,6 +470,12 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
 
         self._state.metrics_updated.connect(self._update_metrics)
 
+        logitech_layout = QtWidgets.QVBoxLayout()
+        layout.addLayout(logitech_layout)
+        logitech_layout.addWidget(QtWidgets.QLabel("Command & Tag Log", self))
+        self._logitech_list = QtWidgets.QListWidget(self)
+        logitech_layout.addWidget(self._logitech_list)
+
         self._tag_list = QtWidgets.QListWidget(self)
         self._tag_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._tag_list.itemActivated.connect(self._on_tag_selected)
@@ -503,6 +513,7 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
             return
         label = str(tag.get("label", tag_id)).strip() or tag_id
         status = str(tag.get("status", "")).lower()
+        self._append_logitech_entry("TAG", tag, summary=f"{label} [{status or 'active'}]")
         if status == "deleted":
             item = self._tag_items.pop(tag_id, None)
             if item is not None:
@@ -518,6 +529,18 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
             self._tag_items[tag_id] = item
             self._tag_list.addItem(item)
         item.setData(QtCore.Qt.UserRole, tag_id)
+
+    def _on_command_event(self, command: dict) -> None:
+        if not isinstance(command, dict):
+            return
+        name = str(command.get("name", "")) or "command"
+        payload = command.get("payload", {})
+        try:
+            payload_text = json.dumps(payload, sort_keys=True)
+        except TypeError:
+            payload_text = str(payload)
+        summary = f"{name}: {payload_text}" if payload_text else name
+        self._append_logitech_entry("CMD", command, summary=summary)
 
     def _on_tag_selected(self, item: QtWidgets.QListWidgetItem) -> None:
         if item is None:
@@ -544,6 +567,31 @@ class JetStreamPlayerWindow(QtWidgets.QMainWindow):
             self._scrub_slider.setRange(0, max(0, metrics.timeline - 1))
             self._scrub_slider.setValue(metrics.position if metrics.timeline else 0)
             self._scrub_slider.blockSignals(False)
+
+    def _append_logitech_entry(
+        self,
+        category: str,
+        message: Mapping[str, object],
+        *,
+        summary: str,
+    ) -> None:
+        timestamp = self._extract_timestamp(message)
+        text = f"[{category}] {timestamp} — {summary}" if timestamp else f"[{category}] {summary}"
+        self._logitech_list.addItem(text)
+        if self._logitech_list.count() > self._logitech_limit:
+            self._logitech_list.takeItem(0)
+
+    @staticmethod
+    def _extract_timestamp(message: Mapping[str, object]) -> str:
+        for key in ("recv_iso", "ts", "updated_ts"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        epoch = message.get("recv_epoch_ms")
+        if isinstance(epoch, (int, float)):
+            dt = datetime.fromtimestamp(float(epoch) / 1000.0)
+            return dt.isoformat()
+        return ""
 
     def step_once(self) -> None:
         self._state.step_once()
@@ -613,19 +661,35 @@ class HeadlessPlayerRunner:
 
 
 def connect_in_memory(
-    subject_map: Optional[Mapping[str, str]] = None,
+    subject_map: Optional[Mapping[str, str | Sequence[str]]] = None,
 ) -> tuple[InMemoryJetStream, Dict[str, ReceiverFactory]]:
     stream = InMemoryJetStream()
-    subjects = dict(subject_map or {"live": "tspi.>", "historical": "player.default.playout.>"})
+    subjects = dict(
+        subject_map
+        or {
+            "live": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
+            "historical": ["player.default.playout.>", "tags.broadcast"],
+        }
+    )
 
-    def _make_factory(subject: str) -> ReceiverFactory:
-        def _factory(subject=subject) -> TSPIReceiver:
-            consumer = stream.create_consumer(subject)
-            return TSPIReceiver(consumer)
+    def _make_factory(subjects: Sequence[str]) -> ReceiverFactory:
+        def _factory(subjects=tuple(subjects)) -> TSPIReceiver:
+            consumers = [stream.create_consumer(subject) for subject in subjects]
+            receivers = [TSPIReceiver(consumer) for consumer in consumers]
+            if len(receivers) == 1:
+                return receivers[0]
+            return CompositeTSPIReceiver(receivers)
 
         return _factory
 
-    receivers = {name: _make_factory(subject) for name, subject in subjects.items()}
+    normalized: Dict[str, Sequence[str]] = {}
+    for name, subject in subjects.items():
+        if isinstance(subject, str):
+            normalized[name] = [subject]
+        else:
+            normalized[name] = list(subject)
+
+    receivers = {name: _make_factory(subjects) for name, subjects in normalized.items()}
     return stream, receivers
 
 

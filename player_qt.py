@@ -8,7 +8,7 @@ from pathlib import Path
 from PyQt5 import QtWidgets
 
 from tspi_kit.jetstream_client import JetStreamThreadedClient
-from tspi_kit.receiver import TSPIReceiver
+from tspi_kit.receiver import CompositeTSPIReceiver, TSPIReceiver
 from tspi_kit.ui import HeadlessPlayerRunner, JetStreamPlayerWindow, UiConfig
 from tspi_kit.ui.player import connect_in_memory, ensure_offscreen
 
@@ -59,8 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     config = UiConfig(metrics_interval=args.metrics_interval, default_rate=args.rate, default_clock=args.clock)
     ensure_offscreen(args.headless)
     subject_map = {
-        "live": "tspi.>",
-        "historical": f"player.{args.room}.playout.>",
+        "live": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
+        "historical": [f"player.{args.room}.playout.>", "tags.broadcast"],
     }
     js_client: JetStreamThreadedClient | None = None
     cleanup_required = False
@@ -69,11 +69,19 @@ def main(argv: list[str] | None = None) -> int:
         js_client = JetStreamThreadedClient(args.nats_servers)
         js_client.start()
         receivers = {}
-        for name, subject in subject_map.items():
-            durable = f"{args.durable_prefix}-{name}"
+        for name, subjects in subject_map.items():
+            durable_prefix = f"{args.durable_prefix}-{name}"
             stream_name = args.js_stream if name == "live" else args.historical_stream
-            consumer = js_client.create_pull_consumer(subject, durable=durable, stream=stream_name)
-            receivers[name] = TSPIReceiver(consumer)
+            receiver_list = []
+            for index, subject in enumerate(subjects):
+                durable = f"{durable_prefix}-{index}"
+                consumer = js_client.create_pull_consumer(subject, durable=durable, stream=stream_name)
+                receiver_list.append(TSPIReceiver(consumer))
+            if len(receiver_list) == 1:
+                receiver: TSPIReceiver = receiver_list[0]
+            else:
+                receiver = CompositeTSPIReceiver(receiver_list)
+            receivers[name] = receiver
         sources = receivers
         cleanup_required = True
     else:
