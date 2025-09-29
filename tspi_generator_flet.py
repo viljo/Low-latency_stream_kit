@@ -167,10 +167,10 @@ class FlightGeneratorApp:
 
     def _connect_signals(self) -> None:
         self.controller.metrics_updated.connect(
-            lambda payload: self.page.call_from_thread(lambda: self._update_metrics(payload))
+            lambda payload: self.page.run_task(self._update_metrics_async, payload)
         )
 
-    def _update_metrics(self, payload: str) -> None:
+    def _apply_metrics(self, payload: str) -> None:
         try:
             metrics = json.loads(payload)
         except json.JSONDecodeError:
@@ -184,7 +184,10 @@ class FlightGeneratorApp:
         self.log_view.controls.append(self._ft.Text(text))
         if len(self.log_view.controls) > 200:
             del self.log_view.controls[0 : len(self.log_view.controls) - 200]
-        self.page.update()
+
+    async def _update_metrics_async(self, payload: str) -> None:
+        self._apply_metrics(payload)
+        await self.page.update_async()
 
     # ------------------------------------------------------------------ Control handlers
 
@@ -213,13 +216,16 @@ class FlightGeneratorApp:
                     break
         finally:
             self._running = False
-            self.page.call_from_thread(self._on_finished)
+            self.page.run_task(self._on_finished_async)
 
-    def _on_finished(self) -> None:
+    def _set_idle_state(self) -> None:
         self.status_text.value = "Generator idle"
         self.start_button.disabled = False
         self.stop_button.disabled = True
-        self.page.update()
+
+    async def _on_finished_async(self) -> None:
+        self._set_idle_state()
+        await self.page.update_async()
 
     async def _on_start(self, _event) -> None:
         self.start_generation()
