@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
@@ -222,12 +223,20 @@ class JetStreamThreadedClient:
     ) -> JetStreamConsumerAdapter:
         if self._js is None:
             raise RuntimeError("JetStream client not started")
-        future = asyncio.run_coroutine_threadsafe(
-            self._js.pull_subscribe(subject, durable=durable, stream=stream),
-            self._loop,
-        )
-        subscription = future.result(timeout=10)
-        return JetStreamConsumerAdapter(self._loop, subscription)
+        deadline = time.time() + 30.0
+        while True:
+            future = asyncio.run_coroutine_threadsafe(
+                self._js.pull_subscribe(subject, durable=durable, stream=stream),
+                self._loop,
+            )
+            try:
+                subscription = future.result(timeout=10)
+            except Exception as exc:  # pragma: no cover - surfaced to caller
+                if isinstance(exc, NotFoundError) and time.time() < deadline:
+                    time.sleep(0.5)
+                    continue
+                raise
+            return JetStreamConsumerAdapter(self._loop, subscription)
 
 
 __all__ = [

@@ -540,8 +540,23 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     from nats import errors as nats_errors
     from nats.aio.client import Client as NATS
+
     ErrNoServers = getattr(nats_errors, "ErrNoServers", nats_errors.NoServersError)
+    NATSTimeoutError = getattr(
+        nats_errors, "TimeoutError", getattr(nats_errors, "ErrTimeout", asyncio.TimeoutError)
+    )
+
     from nats.js.errors import NotFoundError
+
+    try:
+        from nats.js.errors import BadRequestError
+    except Exception:  # pragma: no cover - optional dependency mismatch
+        BadRequestError = None  # type: ignore[assignment]
+
+    try:
+        from nats.js.errors import TimeoutError as JSNATSTimeoutError
+    except Exception:  # pragma: no cover - optional dependency mismatch
+        JSNATSTimeoutError = NATSTimeoutError  # type: ignore[assignment]
     from tspi_kit.archiver import Archiver
 
     async def connect_to_cluster(servers: List[str]) -> NATS:
@@ -567,20 +582,73 @@ def main(argv: Iterable[str] | None = None) -> int:
     async def prepare_stream(js, replicas: int) -> None:
         stream_name = "TSPI"
         subjects = normalize_stream_subjects(["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"])
-        try:
-            await js.stream_info(stream_name)
-            await js.update_stream(
-                {"name": stream_name, "subjects": subjects, "num_replicas": replicas}
-            )
-        except NotFoundError:
-            await js.add_stream(
-                name=stream_name,
-                subjects=subjects,
-                num_replicas=replicas,
-                retention="limits",
-                max_msgs=-1,
-                max_bytes=-1,
-            )
+        timeout_candidates: list[type[BaseException]] = []
+        for candidate in (
+            NATSTimeoutError,
+            JSNATSTimeoutError,
+            asyncio.TimeoutError,
+            TimeoutError,
+        ):
+            if isinstance(candidate, type):
+                timeout_candidates.append(candidate)
+        timeout_exceptions = tuple(dict.fromkeys(timeout_candidates))
+
+        deadline = time.monotonic() + 60.0
+        last_info = None
+        while True:
+            try:
+                try:
+                    last_info = await js.stream_info(stream_name)
+                except NotFoundError:
+                    await js.add_stream(
+                        name=stream_name,
+                        subjects=subjects,
+                        num_replicas=replicas,
+                        retention="limits",
+                        max_msgs=-1,
+                        max_bytes=-1,
+                    )
+                    last_info = await js.stream_info(stream_name)
+                else:
+                    await js.update_stream(
+                        {"name": stream_name, "subjects": subjects, "num_replicas": replicas}
+                    )
+                    last_info = await js.stream_info(stream_name)
+                if replicas > 1 and last_info is not None:
+                    cluster = getattr(last_info, "cluster", None)
+                    if cluster is not None and not getattr(cluster, "leader", None):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Timed out preparing JetStream stream")
+                        await asyncio.sleep(1.0)
+                        continue
+                    replica_status = getattr(cluster, "replicas", None) if cluster else None
+                    if replica_status:
+                        ready_replicas = [
+                            replica
+                            for replica in replica_status
+                            if getattr(replica, "current", False)
+                            and not getattr(replica, "offline", False)
+                        ]
+                        if len(ready_replicas) < min(replicas, len(replica_status)):
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError("Timed out preparing JetStream stream")
+                            await asyncio.sleep(1.0)
+                            continue
+                break
+            except timeout_exceptions as exc:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out preparing JetStream stream") from exc
+                await asyncio.sleep(1.0)
+            except Exception as exc:
+                if BadRequestError is not None and isinstance(exc, BadRequestError):
+                    err_code = getattr(exc, "err_code", None)
+                    description = getattr(exc, "description", "")
+                    if err_code == 10005 or "no suitable peers" in str(description).lower():
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Timed out preparing JetStream stream") from exc
+                        await asyncio.sleep(1.0)
+                        continue
+                raise
         for durable in ("demo-player", "demo-receiver"):
             try:
                 await js.delete_consumer(stream_name, durable)
@@ -610,6 +678,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 nc = await connect_to_cluster(cluster.client_urls)
                 js = nc.jetstream()
                 await prepare_stream(js, cluster.replicas)
+                await asyncio.sleep(2.0)
 
                 if datastore_cluster is None:
                     raise RuntimeError("Datastore cluster failed to initialise")
