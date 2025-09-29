@@ -5,7 +5,7 @@ import argparse
 import threading
 import time
 from datetime import UTC, datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from tspi_kit.commands import (
     COMMAND_SUBJECT_PREFIX,
@@ -213,13 +213,14 @@ class CommandConsoleApp:
         if status_consumer is not None:
             self._poller = StatusPoller(
                 status_consumer,
-                on_message=lambda payload: self.page.call_from_thread(
-                    lambda: self._handle_status_payload(payload)
+                on_message=lambda payload: self._run_on_page(
+                    lambda: self._handle_status_payload(payload, update=False)
                 ),
-                on_error=lambda message: self.page.call_from_thread(
+                on_error=lambda message: self._run_on_page(
                     lambda: self._append_log(
                         f"Status poller error: {message}",
                         color=self._ft.colors.RED,
+                        update=False,
                     )
                 ),
             )
@@ -367,26 +368,36 @@ class CommandConsoleApp:
             self.active_channel.value = ""
         self.page.update()
 
-    def _append_log(self, message: str, *, color: str | None = None) -> None:
+    def _run_on_page(self, handler: Callable[[], None]) -> None:
+        async def _runner() -> None:
+            handler()
+            await self.page.update_async()
+
+        self.page.run_task(_runner)
+
+    def _append_log(
+        self, message: str, *, color: str | None = None, update: bool = True
+    ) -> None:
         entry = self._ft.Text(f"{_format_timestamp(datetime.now(tz=UTC))} — {message}", color=color)
         self.log_view.controls.append(entry)
         if len(self.log_view.controls) > 500:
             del self.log_view.controls[0 : len(self.log_view.controls) - 500]
-        self.page.update()
+        if update:
+            self.page.update()
 
-    def _handle_status_payload(self, payload: bytes) -> None:
+    def _handle_status_payload(self, payload: bytes, *, update: bool = True) -> None:
         presence, events = self._tracker.process_raw(payload)
         if presence is not None:
             self._clients[presence.client_id] = presence
-            self._refresh_clients()
+            self._refresh_clients(update=update)
         for event in events:
-            self._append_event(event)
+            self._append_event(event, update=update)
 
-    def _append_event(self, event: OperatorEvent) -> None:
+    def _append_event(self, event: OperatorEvent, *, update: bool = True) -> None:
         timestamp = _format_timestamp(event.timestamp)
-        self._append_log(f"{timestamp} — {event.message}")
+        self._append_log(f"{timestamp} — {event.message}", update=update)
 
-    def _refresh_clients(self) -> None:
+    def _refresh_clients(self, *, update: bool = True) -> None:
         rows = []
         ft = self._ft
         for presence in sorted(self._clients.values(), key=lambda item: item.client_id):
@@ -408,7 +419,8 @@ class CommandConsoleApp:
                 )
             )
         self.client_table.rows = rows
-        self.page.update()
+        if update:
+            self.page.update()
 
     # ------------------------------------------------------------------ Event handlers
 
