@@ -134,10 +134,14 @@ def main(argv: list[str] | None = None) -> int:
         default_rate=args.rate,
         default_clock=args.clock,
     )
-    subject_map = {
+    subject_map: dict[str, list[str]] = {
         "livestream": ["tspi.>", "tspi.cmd.display.>", "tags.broadcast"],
-        "replay.default": [f"player.{args.room}.playout.>", "tags.broadcast"],
     }
+    if args.historical_stream:
+        subject_map["replay.default"] = [
+            f"player.{args.room}.playout.>",
+            "tags.broadcast",
+        ]
 
     sources, tag_sender, cleanup = _build_sources(
         subject_map,
