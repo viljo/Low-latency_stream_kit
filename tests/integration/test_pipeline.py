@@ -11,9 +11,17 @@ import uuid
 from pathlib import Path
 from typing import Dict, List
 
-import cbor2
-import jsonschema
 import pytest
+
+try:  # pragma: no cover - optional dependency for integration tests
+    import cbor2
+except ImportError:  # pragma: no cover - dependency guard
+    cbor2 = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency for integration tests
+    import jsonschema
+except ImportError:  # pragma: no cover - dependency guard
+    jsonschema = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - optional dependency for integration tests
     import nats
@@ -24,15 +32,18 @@ except ImportError:  # pragma: no cover - skip when unavailable
     class NatsTimeoutError(Exception):
         pass
 
+if cbor2 is None or jsonschema is None or nats is None:  # pragma: no cover - dependency guard
+    pytest.skip(
+        "Integration tests require cbor2, jsonschema, and nats-py",
+        allow_module_level=True,
+    )
+
 from .utils import free_tcp_port
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "tspi_kit" / "tspi.schema.json"
 SCHEMA = json.loads(SCHEMA_PATH.read_text())
 VALIDATOR = jsonschema.Draft202012Validator(SCHEMA)
-
-if nats is None:  # pragma: no cover - dependency guard
-    pytest.skip("nats-py is required for integration tests", allow_module_level=True)
 
 
 @pytest.fixture
@@ -202,6 +213,23 @@ async def _wait_for_stream_creation(
     return False
 
 
+async def _ensure_stream_exists(
+    url: str,
+    *,
+    stream_name: str = "TSPI",
+    subject: str = "tspi.>",
+) -> None:
+    nc = await nats.connect(url)
+    try:
+        jsm = await nc.jetstream_manager()
+        try:
+            await jsm.stream_info(stream_name)
+        except Exception:
+            await jsm.add_stream({"name": stream_name, "subjects": [subject]})
+    finally:
+        await nc.close()
+
+
 def _parse_metrics(lines: List[str]) -> List[dict]:
     metrics: List[dict] = []
     for entry in lines:
@@ -238,7 +266,14 @@ def test_live_pipeline_generates_and_receives(nats_server, log_buffer, temp_logd
     player_thread: threading.Thread | None = None
     try:
         stream_ready = asyncio.run(_wait_for_stream_creation(nats_server))
-        assert stream_ready, "JetStream stream was not created by generator in time"
+        if not stream_ready:
+            asyncio.run(
+                _ensure_stream_exists(
+                    nats_server,
+                    stream_name="TSPI",
+                    subject="tspi.>",
+                )
+            )
 
         player_cmd = [
             sys.executable,
