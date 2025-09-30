@@ -29,7 +29,7 @@
   * `tags.create`, `tags.update`, `tags.delete`, `tags.broadcast` — collaborative annotations.
   Session metadata broadcasts complement, but do not replace, these timestamped
   tags that capture operator comments tied to specific events.
-* Provides HA (`replicas=3`), consumer groups, and a persistence window for replay.
+* Provides consumer groups and a persistence window for replay.
 
 ### Archiver
 * Connects solely to JetStream.
@@ -42,7 +42,7 @@
   * `messages` — append-only audit log with TSPI extracts.
   * `commands` — history of global commands.
   * `tags` — annotation records.
-* Runs with HA (primary plus streaming replicas).
+* Runs as a single-node service suitable for demos.
 
 ### Store Replayer
 * Reads from TimescaleDB by time window or tag selection.

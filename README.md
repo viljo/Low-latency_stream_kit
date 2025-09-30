@@ -138,9 +138,9 @@ Apache License 2.0 — see `LICENSE`.
 ### Demo helper script
 The `./demo` helper orchestrates a full demonstration environment. It verifies system
 and Python dependencies, launches a three-node NATS JetStream cluster, provisions an
-in-memory two-node Timescale datastore HA pair for the archiver, starts the TSPI data
-generator UI in continuous mode, and opens the unified receiver/player UI against
-that infrastructure. Run it from the repository root:
+in-memory Timescale datastore for the archiver, starts the TSPI data generator UI in
+continuous mode, and opens the unified receiver/player UI against that
+infrastructure. Run it from the repository root:
 
 ```bash
 # Ensures dependencies are available (prefers uv, falls back to .venv if present)
