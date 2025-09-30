@@ -137,7 +137,7 @@ APT_UPDATED = False
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the HA JetStream demo setup.")
+    parser = argparse.ArgumentParser(description="Run the JetStream demo setup.")
     parser.add_argument(
         "--duration",
         type=float,
@@ -431,13 +431,11 @@ class InMemoryTimescaleReplica:
             self._tags.clear()
 
 
-class TimescaleHACluster:
-    """In-memory HA simulation for the Timescale datastore."""
+class InMemoryTimescaleDatastore:
+    """In-memory datastore simulation for the demo archiver."""
 
-    def __init__(self, replicas: int = 2) -> None:
-        if replicas < 1:
-            raise ValueError("At least one datastore replica is required")
-        self._replicas = [InMemoryTimescaleReplica(f"ha-node-{index + 1}") for index in range(replicas)]
+    def __init__(self) -> None:
+        self._replica = InMemoryTimescaleReplica("primary")
         self._messages: List[MessageRecord] = []
         self._message_ids: Dict[str, int] = {}
         self._commands: Dict[str, Dict[str, Any]] = {}
@@ -445,18 +443,11 @@ class TimescaleHACluster:
         self._next_id = 1
         self._lock = asyncio.Lock()
 
-    @property
-    def replica_count(self) -> int:
-        return len(self._replicas)
-
-    def replica_names(self) -> List[str]:
-        return [replica.name for replica in self._replicas]
-
     async def connect(self) -> None:
         return None
 
     async def close(self) -> None:
-        await asyncio.gather(*(replica.close() for replica in self._replicas))
+        await self._replica.close()
         async with self._lock:
             self._messages.clear()
             self._message_ids.clear()
@@ -499,7 +490,7 @@ class TimescaleHACluster:
             self._messages.append(record)
             if message_key:
                 self._message_ids[message_key] = record_id
-        await asyncio.gather(*(replica.store_message(record) for replica in self._replicas))
+        await self._replica.store_message(record)
         return record_id
 
     async def fetch_messages_between(self, start_ts: float, end_ts: float) -> Sequence[MessageRecord]:
@@ -534,7 +525,7 @@ class TimescaleHACluster:
         key = str(cmd_id)
         async with self._lock:
             self._commands[key] = enriched
-        await asyncio.gather(*(replica.store_command(enriched) for replica in self._replicas))
+        await self._replica.store_command(enriched)
 
     async def latest_command(self, name: str) -> Dict[str, Any] | None:
         async with self._lock:
@@ -585,7 +576,7 @@ class TimescaleHACluster:
                 updated_ts=self._coerce_iso(updated_ts_value),
             )
             self._tags[record.id] = record
-        await asyncio.gather(*(replica.store_tag(record) for replica in self._replicas))
+        await self._replica.store_tag(record)
 
     async def get_tag(self, tag_id: str) -> TagRecord | None:
         async with self._lock:
@@ -602,15 +593,6 @@ class TimescaleHACluster:
     async def count_tags(self) -> int:
         async with self._lock:
             return len(self._tags)
-
-    async def replica_message_counts(self) -> List[int]:
-        return [count for count in await asyncio.gather(*(replica.count_messages() for replica in self._replicas))]
-
-    async def replica_command_counts(self) -> List[int]:
-        return [count for count in await asyncio.gather(*(replica.count_commands() for replica in self._replicas))]
-
-    async def replica_tag_counts(self) -> List[int]:
-        return [count for count in await asyncio.gather(*(replica.count_tags() for replica in self._replicas))]
 
     @staticmethod
     def _to_datetime(value: datetime | float | int | str) -> datetime:
@@ -719,7 +701,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     async def run_async() -> None:
         cluster = JetStreamClusterManager(log_dir=args.log_dir)
-        datastore_cluster: TimescaleHACluster | None = None
+        datastore: InMemoryTimescaleDatastore | None = None
         archiver_task: asyncio.Task[None] | None = None
         generator_proc: subprocess.Popen[str] | None = None
         command_proc: subprocess.Popen[str] | None = None
@@ -728,12 +710,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         shutdown_event = asyncio.Event()
         try:
             cluster.start()
-            datastore_cluster = TimescaleHACluster(replicas=2)
-            await datastore_cluster.connect()
-            replica_list = ", ".join(datastore_cluster.replica_names())
-            print(
-                f"Started HA datastore with {datastore_cluster.replica_count} nodes ({replica_list})."
-            )
+            datastore = InMemoryTimescaleDatastore()
+            await datastore.connect()
+            print("Started in-memory datastore for archiver output.")
             loop = asyncio.get_running_loop()
             nc: NATS | None = None
             try:
@@ -758,10 +737,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                 )
                 await asyncio.sleep(2.0)
 
-                if datastore_cluster is None:
-                    raise RuntimeError("Datastore cluster failed to initialise")
+                if datastore is None:
+                    raise RuntimeError("Datastore failed to initialise")
 
-                archiver = Archiver(js, datastore_cluster, durable_prefix="demo")
+                archiver = Archiver(js, datastore, durable_prefix="demo")
 
                 async def archiver_worker() -> None:
                     try:
@@ -773,16 +752,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 await asyncio.sleep(1.0)
                                 continue
                             if stored:
-                                total = await datastore_cluster.count_messages()
-                                replica_totals = await datastore_cluster.replica_message_counts()
-                                replica_status = ", ".join(
-                                    f"{name}={count}"
-                                    for name, count in zip(
-                                        datastore_cluster.replica_names(), replica_totals
-                                    )
-                                )
+                                total = await datastore.count_messages()
                                 print(
-                                    f"[datastore] persisted {stored} message(s) (total {total}; {replica_status})",
+                                    f"[datastore] persisted {stored} message(s) (total {total})",
                                     flush=True,
                                 )
                             else:
@@ -928,22 +900,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                         await archiver_task
                     except asyncio.CancelledError:  # pragma: no cover - expected on shutdown
                         pass
-                if datastore_cluster is not None:
-                    total_messages = await datastore_cluster.count_messages()
-                    replica_totals = await datastore_cluster.replica_message_counts()
-                    replica_status = ", ".join(
-                        f"{name}={count}"
-                        for name, count in zip(datastore_cluster.replica_names(), replica_totals)
-                    )
-                    total_commands = await datastore_cluster.count_commands()
-                    total_tags = await datastore_cluster.count_tags()
+                if datastore is not None:
+                    total_messages = await datastore.count_messages()
+                    total_commands = await datastore.count_commands()
+                    total_tags = await datastore.count_tags()
                     print(
                         "Datastore summary: "
-                        f"{total_messages} message(s), {total_commands} command(s), {total_tags} tag(s) "
-                        f"across replicas ({replica_status}).",
+                        f"{total_messages} message(s), {total_commands} command(s), {total_tags} tag(s).",
                         flush=True,
                     )
-                    await datastore_cluster.close()
+                    await datastore.close()
                 if nc is not None:
                     try:
                         await nc.drain()

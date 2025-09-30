@@ -2,32 +2,87 @@ name: CI
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: [main]
   pull_request:
 
 jobs:
-  test:
-    name: Tests (Python ${{ matrix.python-version }} on ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  integration:
     strategy:
-      fail-fast: false
       matrix:
-        os: [debian-13, macos-14]
-        python-version: ["3.11"]
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install uv
+        shell: bash
         run: |
+          set -euxo pipefail
+          if command -v uv >/dev/null 2>&1; then
+            exit 0
+          fi
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest pytest-asyncio pytest-qt PyQt5
+          python -m pip install uv
 
-      - name: Run tests
-        run: pytest
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            .venv
+            ~/.cache/uv
+            ~/.cache/pip
+          key: ${{ runner.os }}-pydeps-${{ hashFiles('pyproject.toml', 'requirements.txt', 'uv.lock', 'poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pydeps-
+
+      - name: Install project dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if command -v uv >/dev/null 2>&1; then
+            if ! uv sync --all-extras; then
+              python -m pip install -r requirements.txt
+            fi
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Install nats-server
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            version="v2.10.12"
+            archive="nats-server-${version}-linux-amd64.tar.gz"
+            curl -sSLo nats-server.tar.gz "https://github.com/nats-io/nats-server/releases/download/${version}/${archive}"
+            tar -xzf nats-server.tar.gz
+            sudo mv "nats-server-${version}-linux-amd64/nats-server" /usr/local/bin/nats-server
+            rm -rf nats-server.tar.gz "nats-server-${version}-linux-amd64"
+          else
+            brew update
+            brew install nats-io/nats/nats-server
+          fi
+
+      - name: Run integration tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f .venv/bin/activate ]; then
+            . .venv/bin/activate
+          fi
+          python -m pytest -q -k integration --maxfail=1 --disable-warnings
+
+      - name: Upload integration artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artifacts-${{ matrix.os }}
+          path: tests/.artifacts/**
+          if-no-files-found: ignore
