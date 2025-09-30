@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import struct
-from dataclasses import dataclass
-from datetime import UTC, datetime, timezone
+from dataclasses import dataclass, asdict
+from datetime import UTC, datetime, timezone, timedelta
 from typing import Any, Dict, List, Sequence
 
 import cbor2
@@ -191,7 +191,7 @@ class _FakeTimescaleDatastore:
         if not tag_id:
             return
         existing = self._tags.get(tag_id)
-        base = dict(existing.__dict__) if existing else {}
+        base = asdict(existing) if existing else {}
         base.update(
             id=tag_id,
             ts=payload.get("ts", base.get("ts", datetime.now(tz=UTC).isoformat())),
@@ -201,7 +201,10 @@ class _FakeTimescaleDatastore:
             notes=payload.get("notes", base.get("notes")),
             extra=payload.get("extra", base.get("extra", {})),
             status=base.get("status", "active"),
-            updated_ts=payload.get("ts", base.get("updated_ts", datetime.now(tz=UTC).isoformat())),
+            updated_ts=payload.get(
+                "updated_ts",
+                payload.get("ts", base.get("updated_ts", datetime.now(tz=UTC).isoformat())),
+            ),
         )
         if subject.endswith("delete"):
             base["status"] = "deleted"
@@ -253,6 +256,43 @@ def _geocentric_datagram(sensor_id: int, day: int, time_s: float) -> bytes:
         int(0.3 * 100),
     )
     return header + payload
+
+
+def test_fake_datastore_preserves_updated_ts() -> None:
+    async def _exercise() -> None:
+        datastore = _FakeTimescaleDatastore()
+        created = datetime(2024, 1, 1, tzinfo=UTC)
+        updated = created + timedelta(minutes=5)
+
+        await datastore.apply_tag_event(
+            "tags.create",
+            {
+                "id": "tag-1",
+                "ts": created.isoformat(),
+                "label": "Initial",
+                "status": "active",
+            },
+            message_id=1,
+        )
+
+        await datastore.apply_tag_event(
+            "tags.update",
+            {
+                "id": "tag-1",
+                "ts": created.isoformat(),
+                "updated_ts": updated.isoformat(),
+                "label": "Updated",
+                "status": "active",
+            },
+            message_id=2,
+        )
+
+        record = await datastore.get_tag("tag-1")
+        assert record is not None
+        assert record.ts == created.isoformat()
+        assert record.updated_ts == updated.isoformat()
+
+    asyncio.run(_exercise())
 
 
 def test_archiver_persists_messages_commands_and_tags() -> None:
