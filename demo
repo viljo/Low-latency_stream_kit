@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helper script to launch a full demo of the low-latency stream kit."""
+"""Helper script to launch a simplified demo of the low-latency stream kit."""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +18,6 @@ import socket
 import shlex
 from datetime import UTC, datetime
 from pathlib import Path
-from textwrap import dedent
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
@@ -30,7 +29,7 @@ APT_UPDATED = False
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the HA JetStream demo setup.")
+    parser = argparse.ArgumentParser(description="Run the JetStream demo setup.")
     parser.add_argument(
         "--duration",
         type=float,
@@ -53,7 +52,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--log-dir",
         type=Path,
         default=None,
-        help="Optional directory to store JetStream node logs. Defaults to a temporary directory.",
+        help="Optional directory to store JetStream logs. Defaults to a temporary directory.",
     )
     return parser.parse_args(argv)
 
@@ -154,183 +153,99 @@ def ensure_python_dependencies(requirements_path: Path) -> None:
         print("All required Python packages are already installed.")
 
 
-class JetStreamClusterManager:
-    """Manage a local multi-node JetStream cluster."""
+class JetStreamServer:
+    """Manage a single JetStream-enabled NATS server process."""
 
     def __init__(
         self,
-        replicas: int = 3,
         *,
-        base_client_port: int = 4222,
-        base_cluster_port: int = 6222,
-        base_monitor_port: int = 8222,
+        client_port: int = 4222,
+        monitor_port: int = 8222,
         log_dir: Path | None = None,
     ) -> None:
-        self.replicas = replicas
-        self.base_client_port = base_client_port
-        self.base_cluster_port = base_cluster_port
-        self.base_monitor_port = base_monitor_port
+        self.client_port = client_port
+        self.monitor_port = monitor_port
         self._temp_dir_obj = tempfile.TemporaryDirectory() if log_dir is None else None
         self.base_dir = (Path(self._temp_dir_obj.name) if self._temp_dir_obj else log_dir).resolve()
-        self.config_dir = self.base_dir / "configs"
         self.store_dir = self.base_dir / "store"
         self.logs_dir = self.base_dir / "logs"
-        self.config_dir.mkdir(parents=True, exist_ok=True)
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self._processes: List[subprocess.Popen[str]] = []
-        self._log_handles: List[object] = []
+        self._process: subprocess.Popen[str] | None = None
+        self._log_handle: object | None = None
 
     @property
-    def client_urls(self) -> List[str]:
-        return [f"nats://127.0.0.1:{self.base_client_port + index}" for index in range(self.replicas)]
+    def client_url(self) -> str:
+        return f"nats://127.0.0.1:{self.client_port}"
 
-    @property
-    def client_ports(self) -> List[int]:
-        return [self.base_client_port + index for index in range(self.replicas)]
-
-    def _wait_for_ports(self, timeout: float = 30.0) -> None:
+    def _wait_for_port(self, timeout: float = 30.0) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if any(process.poll() not in (None, 0) for process in self._processes):
-                raise RuntimeError(
-                    "A JetStream node exited during startup. Check logs in " f"{self.logs_dir}"
-                )
-            all_ready = True
-            for port in self.client_ports:
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                        pass
-                except OSError:
-                    all_ready = False
-                    break
-            if all_ready:
-                return
-            time.sleep(0.2)
+            if self._process is not None and self._process.poll() not in (None, 0):
+                raise RuntimeError("The JetStream server exited during startup. Check logs for details.")
+            try:
+                with socket.create_connection(("127.0.0.1", self.client_port), timeout=0.5):
+                    return
+            except OSError:
+                time.sleep(0.2)
         raise RuntimeError(
-            "Timed out waiting for JetStream cluster to become ready on ports "
-            + ", ".join(str(port) for port in self.client_ports)
+            f"Timed out waiting for JetStream server to become ready on port {self.client_port}"
         )
 
-    def _config_text(self, index: int) -> str:
-        node_name = f"demo-node-{index + 1}"
-        client_port = self.base_client_port + index
-        cluster_port = self.base_cluster_port + index
-        monitor_port = self.base_monitor_port + index
-        store_path = (self.store_dir / node_name).as_posix()
-        routes = [
-            f'        "nats://127.0.0.1:{self.base_cluster_port + route}"'
-            for route in range(self.replicas)
-            if route != index
-        ]
-        routes_block = "\n".join(routes)
-        if routes_block:
-            routes_block = "\n" + routes_block + "\n    "
-        return dedent(
-            f"""
-            server_name: "{node_name}"
-            port: {client_port}
-            http: {monitor_port}
-            jetstream: {{
-              store_dir: "{store_path}"
-            }}
-            cluster {{
-              name: "demo"
-              listen: "127.0.0.1:{cluster_port}"
-              routes = [{routes_block}]
-            }}
-            """
-        ).strip()
-
     def start(self) -> None:
-        for index in range(self.replicas):
-            config_path = self.config_dir / f"node_{index + 1}.conf"
-            config_path.write_text(self._config_text(index))
-            log_path = self.logs_dir / f"node_{index + 1}.log"
-            log_handle = log_path.open("w")
-            process = subprocess.Popen(
-                ["nats-server", "-c", str(config_path)],
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            self._processes.append(process)
-            self._log_handles.append(log_handle)
-        print(f"Started JetStream cluster with {self.replicas} nodes. Logs at {self.logs_dir}")
-        self._wait_for_ports()
+        if self._process is not None:
+            return
+        log_path = self.logs_dir / "server.log"
+        log_handle = log_path.open("w")
+        cmd = [
+            "nats-server",
+            "-js",
+            "--store_dir",
+            str(self.store_dir),
+            "--port",
+            str(self.client_port),
+            "--http_port",
+            str(self.monitor_port),
+            "--name",
+            "demo-server",
+        ]
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self._log_handle = log_handle
+        print(f"Started JetStream server. Logs at {log_path}")
+        self._wait_for_port()
 
     def stop(self) -> None:
-        for process in self._processes:
-            if process.poll() is None:
-                process.terminate()
-        for process in self._processes:
-            if process.poll() is None:
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-        for handle in self._log_handles:
+        if self._process is None:
+            if self._temp_dir_obj is not None:
+                self._temp_dir_obj.cleanup()
+            return
+        if self._process.poll() is None:
+            self._process.terminate()
             try:
-                handle.close()
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+        if self._log_handle is not None:
+            try:
+                self._log_handle.close()  # type: ignore[call-arg]
             except Exception:
                 pass
-        self._processes.clear()
-        self._log_handles.clear()
+            self._log_handle = None
+        self._process = None
         if self._temp_dir_obj is not None:
             self._temp_dir_obj.cleanup()
+            self._temp_dir_obj = None
 
 
-class InMemoryTimescaleReplica:
-    """Simple in-memory backing store used to simulate a Timescale node."""
+class InMemoryTimescaleStore:
+    """Simple in-memory stand-in for the Timescale datastore used by the demo."""
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self._messages: List[MessageRecord] = []
-        self._commands: Dict[str, Dict[str, Any]] = {}
-        self._tags: Dict[str, TagRecord] = {}
-        self._lock = asyncio.Lock()
-
-    async def store_message(self, record: MessageRecord) -> None:
-        async with self._lock:
-            self._messages.append(record)
-
-    async def store_command(self, record: Dict[str, Any]) -> None:
-        cmd_id = record.get("cmd_id")
-        if not cmd_id:
-            return
-        async with self._lock:
-            self._commands[str(cmd_id)] = dict(record)
-
-    async def store_tag(self, record: TagRecord) -> None:
-        async with self._lock:
-            self._tags[record.id] = record
-
-    async def count_messages(self) -> int:
-        async with self._lock:
-            return len(self._messages)
-
-    async def count_commands(self) -> int:
-        async with self._lock:
-            return len(self._commands)
-
-    async def count_tags(self) -> int:
-        async with self._lock:
-            return len(self._tags)
-
-    async def close(self) -> None:
-        async with self._lock:
-            self._messages.clear()
-            self._commands.clear()
-            self._tags.clear()
-
-
-class TimescaleHACluster:
-    """In-memory HA simulation for the Timescale datastore."""
-
-    def __init__(self, replicas: int = 2) -> None:
-        if replicas < 1:
-            raise ValueError("At least one datastore replica is required")
-        self._replicas = [InMemoryTimescaleReplica(f"ha-node-{index + 1}") for index in range(replicas)]
+    def __init__(self) -> None:
         self._messages: List[MessageRecord] = []
         self._message_ids: Dict[str, int] = {}
         self._commands: Dict[str, Dict[str, Any]] = {}
@@ -338,23 +253,16 @@ class TimescaleHACluster:
         self._next_id = 1
         self._lock = asyncio.Lock()
 
-    @property
-    def replica_count(self) -> int:
-        return len(self._replicas)
-
-    def replica_names(self) -> List[str]:
-        return [replica.name for replica in self._replicas]
-
     async def connect(self) -> None:
         return None
 
     async def close(self) -> None:
-        await asyncio.gather(*(replica.close() for replica in self._replicas))
         async with self._lock:
             self._messages.clear()
             self._message_ids.clear()
             self._commands.clear()
             self._tags.clear()
+            self._next_id = 1
 
     async def insert_message(
         self,
@@ -392,7 +300,6 @@ class TimescaleHACluster:
             self._messages.append(record)
             if message_key:
                 self._message_ids[message_key] = record_id
-        await asyncio.gather(*(replica.store_message(record) for replica in self._replicas))
         return record_id
 
     async def fetch_messages_between(self, start_ts: float, end_ts: float) -> Sequence[MessageRecord]:
@@ -427,7 +334,6 @@ class TimescaleHACluster:
         key = str(cmd_id)
         async with self._lock:
             self._commands[key] = enriched
-        await asyncio.gather(*(replica.store_command(enriched) for replica in self._replicas))
 
     async def latest_command(self, name: str) -> Dict[str, Any] | None:
         async with self._lock:
@@ -478,7 +384,6 @@ class TimescaleHACluster:
                 updated_ts=self._coerce_iso(updated_ts_value),
             )
             self._tags[record.id] = record
-        await asyncio.gather(*(replica.store_tag(record) for replica in self._replicas))
 
     async def get_tag(self, tag_id: str) -> TagRecord | None:
         async with self._lock:
@@ -495,15 +400,6 @@ class TimescaleHACluster:
     async def count_tags(self) -> int:
         async with self._lock:
             return len(self._tags)
-
-    async def replica_message_counts(self) -> List[int]:
-        return [count for count in await asyncio.gather(*(replica.count_messages() for replica in self._replicas))]
-
-    async def replica_command_counts(self) -> List[int]:
-        return [count for count in await asyncio.gather(*(replica.count_commands() for replica in self._replicas))]
-
-    async def replica_tag_counts(self) -> List[int]:
-        return [count for count in await asyncio.gather(*(replica.count_tags() for replica in self._replicas))]
 
     @staticmethod
     def _to_datetime(value: datetime | float | int | str) -> datetime:
@@ -555,6 +451,7 @@ class TimescaleHACluster:
         except (TypeError, ValueError):
             return None
 
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(list(argv) if argv is not None else None)
     ensure_python_version()
@@ -590,7 +487,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         JSNATSTimeoutError = NATSTimeoutError  # type: ignore[assignment]
     from tspi_kit.archiver import Archiver
 
-    async def connect_to_cluster(servers: List[str]) -> NATS:
+    async def connect_to_server(url: str) -> NATS:
         deadline = time.monotonic() + 60.0
         attempt = 0
         while True:
@@ -598,19 +495,19 @@ def main(argv: Iterable[str] | None = None) -> int:
             nc = NATS()
             try:
                 await nc.connect(
-                    servers=servers,
+                    servers=[url],
                     connect_timeout=2,
                     max_reconnect_attempts=-1,
                     reconnect_time_wait=0.5,
                 )
-                print(f"Connected to JetStream cluster on attempt {attempt}.")
+                print(f"Connected to JetStream server on attempt {attempt}.")
                 return nc
             except ErrNoServers:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("Timed out waiting for JetStream cluster to become ready.")
+                    raise RuntimeError("Timed out waiting for JetStream server to become ready.")
                 await asyncio.sleep(1.0)
 
-    async def prepare_stream(js, replicas: int) -> None:
+    async def prepare_stream(js) -> None:
         stream_name = "TSPI"
         subjects = normalize_stream_subjects(["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"])
         timeout_candidates: list[type[BaseException]] = []
@@ -634,7 +531,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     await js.add_stream(
                         name=stream_name,
                         subjects=subjects,
-                        num_replicas=replicas,
+                        num_replicas=1,
                         retention="limits",
                         max_msgs=-1,
                         max_bytes=-1,
@@ -642,29 +539,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     last_info = await js.stream_info(stream_name)
                 else:
                     await js.update_stream(
-                        {"name": stream_name, "subjects": subjects, "num_replicas": replicas}
+                        {"name": stream_name, "subjects": subjects, "num_replicas": 1}
                     )
                     last_info = await js.stream_info(stream_name)
-                if replicas > 1 and last_info is not None:
-                    cluster = getattr(last_info, "cluster", None)
-                    if cluster is not None and not getattr(cluster, "leader", None):
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Timed out preparing JetStream stream")
-                        await asyncio.sleep(1.0)
-                        continue
-                    replica_status = getattr(cluster, "replicas", None) if cluster else None
-                    if replica_status:
-                        ready_replicas = [
-                            replica
-                            for replica in replica_status
-                            if getattr(replica, "current", False)
-                            and not getattr(replica, "offline", False)
-                        ]
-                        if len(ready_replicas) < min(replicas, len(replica_status)):
-                            if time.monotonic() >= deadline:
-                                raise RuntimeError("Timed out preparing JetStream stream")
-                            await asyncio.sleep(1.0)
-                            continue
                 break
             except timeout_exceptions as exc:
                 if time.monotonic() >= deadline:
@@ -687,8 +564,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 continue
 
     async def run_async() -> None:
-        cluster = JetStreamClusterManager(log_dir=args.log_dir)
-        datastore_cluster: TimescaleHACluster | None = None
+        server = JetStreamServer(log_dir=args.log_dir)
+        datastore: InMemoryTimescaleStore | None = None
         archiver_task: asyncio.Task[None] | None = None
         generator_proc: subprocess.Popen[str] | None = None
         command_proc: subprocess.Popen[str] | None = None
@@ -696,25 +573,22 @@ def main(argv: Iterable[str] | None = None) -> int:
         stop_event = threading.Event()
         shutdown_event = asyncio.Event()
         try:
-            cluster.start()
-            datastore_cluster = TimescaleHACluster(replicas=2)
-            await datastore_cluster.connect()
-            replica_list = ", ".join(datastore_cluster.replica_names())
-            print(
-                f"Started HA datastore with {datastore_cluster.replica_count} nodes ({replica_list})."
-            )
+            server.start()
+            datastore = InMemoryTimescaleStore()
+            await datastore.connect()
+            print("Started in-memory datastore for demo use.")
             loop = asyncio.get_running_loop()
             nc: NATS | None = None
             try:
-                nc = await connect_to_cluster(cluster.client_urls)
+                nc = await connect_to_server(server.client_url)
                 js = nc.jetstream()
-                await prepare_stream(js, cluster.replicas)
+                await prepare_stream(js)
                 await asyncio.sleep(2.0)
 
-                if datastore_cluster is None:
-                    raise RuntimeError("Datastore cluster failed to initialise")
+                if datastore is None:
+                    raise RuntimeError("Datastore failed to initialise")
 
-                archiver = Archiver(js, datastore_cluster, durable_prefix="demo")
+                archiver = Archiver(js, datastore, durable_prefix="demo")
 
                 async def archiver_worker() -> None:
                     try:
@@ -726,16 +600,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 await asyncio.sleep(1.0)
                                 continue
                             if stored:
-                                total = await datastore_cluster.count_messages()
-                                replica_totals = await datastore_cluster.replica_message_counts()
-                                replica_status = ", ".join(
-                                    f"{name}={count}"
-                                    for name, count in zip(
-                                        datastore_cluster.replica_names(), replica_totals
-                                    )
-                                )
+                                total = await datastore.count_messages()
                                 print(
-                                    f"[datastore] persisted {stored} message(s) (total {total}; {replica_status})",
+                                    f"[datastore] persisted {stored} message(s) (total {total})",
                                     flush=True,
                                 )
                             else:
@@ -762,9 +629,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "TSPI",
                     "--stream-prefix",
                     "tspi",
+                    "--nats-server",
+                    server.client_url,
                 ]
-                for url in cluster.client_urls:
-                    generator_cmd.extend(["--nats-server", url])
 
                 player_cmd: List[str] = [
                     sys.executable,
@@ -779,9 +646,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "TSPI",
                     "--source",
                     "live",
+                    "--nats-server",
+                    server.client_url,
                 ]
-                for url in cluster.client_urls:
-                    player_cmd.extend(["--nats-server", url])
 
                 command_cmd: List[str] = [
                     sys.executable,
@@ -794,9 +661,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "TSPI_OPS",
                     "--stream-prefix",
                     "tspi",
+                    "--nats-server",
+                    server.client_url,
                 ]
-                for url in cluster.client_urls:
-                    command_cmd.extend(["--nats-server", url])
 
                 try:
                     generator_proc = subprocess.Popen(generator_cmd, env=qt_env)
@@ -881,29 +748,23 @@ def main(argv: Iterable[str] | None = None) -> int:
                         await archiver_task
                     except asyncio.CancelledError:  # pragma: no cover - expected on shutdown
                         pass
-                if datastore_cluster is not None:
-                    total_messages = await datastore_cluster.count_messages()
-                    replica_totals = await datastore_cluster.replica_message_counts()
-                    replica_status = ", ".join(
-                        f"{name}={count}"
-                        for name, count in zip(datastore_cluster.replica_names(), replica_totals)
-                    )
-                    total_commands = await datastore_cluster.count_commands()
-                    total_tags = await datastore_cluster.count_tags()
+                if datastore is not None:
+                    total_messages = await datastore.count_messages()
+                    total_commands = await datastore.count_commands()
+                    total_tags = await datastore.count_tags()
                     print(
                         "Datastore summary: "
-                        f"{total_messages} message(s), {total_commands} command(s), {total_tags} tag(s) "
-                        f"across replicas ({replica_status}).",
+                        f"{total_messages} message(s), {total_commands} command(s), {total_tags} tag(s).",
                         flush=True,
                     )
-                    await datastore_cluster.close()
+                    await datastore.close()
                 if nc is not None:
                     try:
                         await nc.drain()
                     finally:
                         await nc.close()
         finally:
-            cluster.stop()
+            server.stop()
 
     try:
         asyncio.run(run_async())

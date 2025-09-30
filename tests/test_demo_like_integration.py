@@ -29,7 +29,7 @@ if _DEMO_SPEC is None:  # pragma: no cover - defensive import guard
     raise RuntimeError("Unable to load demo helper module for integration test")
 _DEMO_MODULE = importlib.util.module_from_spec(_DEMO_SPEC)
 _DEMO_LOADER.exec_module(_DEMO_MODULE)
-TimescaleHACluster = _DEMO_MODULE.TimescaleHACluster
+InMemoryTimescaleStore = _DEMO_MODULE.InMemoryTimescaleStore
 
 
 class _PublishResult:
@@ -129,7 +129,7 @@ async def _run_demo_like_flow() -> None:
         timestamp=base_epoch + 0.25,
     )
 
-    datastore = TimescaleHACluster(replicas=2)
+    datastore = InMemoryTimescaleStore()
     archiver = Archiver(jetstream, datastore, durable_prefix="demo-test", pull_timeout=0.01)
 
     stored = await archiver.drain(batch_size=telemetry_count + 10)
@@ -138,9 +138,6 @@ async def _run_demo_like_flow() -> None:
     assert await datastore.count_messages() == expected_total
     assert await datastore.count_commands() == 1
     assert await datastore.count_tags() == 1
-
-    replica_totals = await datastore.replica_message_counts()
-    assert replica_totals == [expected_total] * datastore.replica_count
 
     latest_command = await datastore.latest_command(command.name)
     assert latest_command is not None
