@@ -454,7 +454,9 @@ class TimescaleHACluster:
             existing = self._tags.get(str(tag_id))
             base = existing.__dict__ if existing else {}
             ts_value = payload.get("ts", base.get("ts"))
-            updated_ts_value = payload.get("ts", base.get("updated_ts"))
+            updated_ts_value = payload.get(
+                "updated_ts", payload.get("ts", base.get("updated_ts"))
+            )
             status = payload.get("status")
             if status is None:
                 if subject.endswith(".delete"):

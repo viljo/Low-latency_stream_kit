@@ -1,7 +1,7 @@
 """UI tests for the JetStream player."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import struct
 
 import pytest
@@ -200,6 +200,21 @@ def test_player_handles_tag_events():
     assert "tag-42" in window.state.tags
     assert window._tag_list.count() == 1
     assert "POI" in window._tag_list.item(0).text()
+
+    update_payload = dict(tag_payload)
+    update_payload["label"] = "POI updated"
+    update_payload["updated_ts"] = (base + timedelta(minutes=5)).isoformat()
+    stream.publish("tags.test.updated", cbor2.dumps(update_payload))
+    window.state.preload(batch=10)
+    while window.state.position() < window.state.timeline_length():
+        window.step_once()
+
+    tag_state = window.state.tags["tag-42"]
+    assert tag_state["ts"] == tag_payload["ts"]
+    assert tag_state["updated_ts"] == update_payload["updated_ts"]
+    assert tag_state["updated_ts"] != tag_state["ts"]
+    assert received[-1]["updated_ts"] == update_payload["updated_ts"]
+    assert "POI updated" in window._tag_list.item(0).text()
 
     window.state.scrub_to_index(window.state.timeline_length() - 1)
     assert window.state.seek_to_tag("tag-42")

@@ -335,7 +335,11 @@ class TimescaleDatastore:
 
         existing = await self.get_tag(tag_id)
         now = datetime.now(tz=UTC)
-        updated_ts = payload.get("ts") or (existing.updated_ts if existing else now.isoformat())
+        updated_ts = (
+            payload.get("updated_ts")
+            or payload.get("ts")
+            or (existing.updated_ts if existing else now.isoformat())
+        )
         base_ts = payload.get("ts") or (existing.ts if existing else now.isoformat())
 
         creator = payload.get("creator") or (existing.creator if existing else None)
