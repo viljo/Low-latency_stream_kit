@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest pytest-asyncio pytest-qt
+          python -m pip install -r requirements.txt pytest pytest-asyncio pytest-qt PyQt5
 
       - name: Run tests
         run: pytest

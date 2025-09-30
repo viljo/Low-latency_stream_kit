@@ -1,4 +1,4 @@
-"""Shared configuration values for Qt applications."""
+"""Shared configuration values for interactive applications."""
 from __future__ import annotations
 
 from dataclasses import dataclass
