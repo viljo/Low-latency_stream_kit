@@ -128,6 +128,7 @@ class JetStreamThreadedClient:
         self._thread = threading.Thread(target=self._run_loop, name="jetstream-client", daemon=True)
         self._nc: Optional[NATS] = None
         self._js = None
+        self._jsm = None
         self._started = False
 
     # ------------------------------------------------------------------
@@ -160,6 +161,13 @@ class JetStreamThreadedClient:
                     reconnect_time_wait=self._reconnect_time_wait,
                 )
                 self._js = self._nc.jetstream()
+                if hasattr(self._nc, "jetstream_manager"):
+                    try:
+                        self._jsm = await self._nc.jetstream_manager()
+                    except Exception:  # pragma: no cover - defensive fallback
+                        self._jsm = None
+                else:
+                    self._jsm = None
                 return
             except ErrNoServers as exc:
                 last_error = exc
@@ -199,15 +207,28 @@ class JetStreamThreadedClient:
         self, name: str, subjects: Sequence[str], *, num_replicas: int | None
     ) -> None:
         assert self._js is not None
+        manager = self._jsm or self._js
+        subjects_list = normalize_stream_subjects(list(subjects))
+
         try:
-            await self._js.stream_info(name)
+            await manager.stream_info(name)
             return
         except NotFoundError:
             pass
-        config = {"name": name, "subjects": normalize_stream_subjects(list(subjects))}
+
+        config_kwargs = {"name": name, "subjects": subjects_list}
         if num_replicas is not None:
-            config["num_replicas"] = num_replicas
-        await self._js.add_stream(**config)
+            config_kwargs["num_replicas"] = num_replicas
+
+        try:
+            await manager.add_stream(**config_kwargs)
+        except TypeError:
+            from nats.js.api import StreamConfig
+
+            stream_config = StreamConfig(name=name, subjects=subjects_list)
+            if num_replicas is not None:
+                stream_config.num_replicas = num_replicas
+            await manager.add_stream(stream_config)
 
     def publisher(self) -> JetStreamPublisherAdapter:
         if self._js is None:

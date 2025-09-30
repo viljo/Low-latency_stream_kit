@@ -102,6 +102,8 @@ def _build_sources(
         for name, subjects in subject_map.items():
             durable_base = f"{durable_prefix}-{name}"
             stream_name = js_stream if name == "livestream" else historical_stream
+            if stream_name is None:
+                continue  # Skip channels without a configured stream
             receiver_list: list[TSPIReceiver] = []
             for index, subject in enumerate(subjects):
                 durable = f"{durable_base}-{index}"
