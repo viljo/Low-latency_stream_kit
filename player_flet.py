@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 import flet as ft
+from nats.js.errors import NotFoundError
 
 from tspi_kit.jetstream_client import JetStreamThreadedClient
 from tspi_kit.receiver import CompositeTSPIReceiver, TSPIReceiver
@@ -105,7 +106,20 @@ def _build_sources(
             receiver_list: list[TSPIReceiver] = []
             for index, subject in enumerate(subjects):
                 durable = f"{durable_base}-{index}"
-                consumer = js_client.create_pull_consumer(subject, durable=durable, stream=stream_name)
+                try:
+                    consumer = js_client.create_pull_consumer(
+                        subject, durable=durable, stream=stream_name
+                    )
+                except NotFoundError as exc:
+                    js_client.close()
+                    stream_hint = stream_name or "auto-discovered stream"
+                    raise RuntimeError(
+                        "Unable to locate a JetStream stream for subject"
+                        f" '{subject}' (expected {stream_hint!r}). "
+                        "Ensure the telemetry pipeline is running or pass"
+                        " --js-stream/--historical-stream with the correct"
+                        " stream name."
+                    ) from exc
                 receiver_list.append(TSPIReceiver(consumer))
             if len(receiver_list) == 1:
                 receivers[name] = receiver_list[0]
