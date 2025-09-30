@@ -32,6 +32,17 @@ except ImportError:  # pragma: no cover - skip when unavailable
     class NatsTimeoutError(Exception):
         pass
 
+if nats is not None:
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        _nats_version = _pkg_version("nats-py")
+    except Exception:  # pragma: no cover - metadata lookup fallback
+        _nats_version = "0.0"
+    version = tuple(int(part) for part in _nats_version.split(".")[:2])
+    if version >= (2, 11):
+        pytest.skip("Integration tests require nats-py < 2.11 for legacy API", allow_module_level=True)
+
 if cbor2 is None or jsonschema is None or nats is None:  # pragma: no cover - dependency guard
     pytest.skip(
         "Integration tests require cbor2, jsonschema, and nats-py",
@@ -195,7 +206,10 @@ async def _wait_for_stream_creation(
             continue
         try:
             try:
-                jsm = await nc.jetstream_manager()
+                if hasattr(nc, "jetstream_manager"):
+                    jsm = await nc.jetstream_manager()
+                else:  # nats-py >= 2.11 compatibility path
+                    jsm = nc.jetstream()
             except Exception:
                 await asyncio.sleep(0.25)
                 continue
@@ -203,6 +217,9 @@ async def _wait_for_stream_creation(
                 await jsm.stream_info(stream_name)
                 return True
             except Exception:
+                # Newer nats-py releases expose JetStreamManager operations on
+                # ``JetStreamContext`` directly without the synchronous manager
+                # object, so provide a best-effort fallback to the context API.
                 try:
                     await jsm.find_stream_name_by_subject(subject)
                     return True
@@ -221,11 +238,20 @@ async def _ensure_stream_exists(
 ) -> None:
     nc = await nats.connect(url)
     try:
-        jsm = await nc.jetstream_manager()
+        if hasattr(nc, "jetstream_manager"):
+            jsm = await nc.jetstream_manager()
+        else:  # nats-py >= 2.11 compatibility path
+            jsm = nc.jetstream()
         try:
             await jsm.stream_info(stream_name)
         except Exception:
-            await jsm.add_stream({"name": stream_name, "subjects": [subject]})
+            try:
+                await jsm.add_stream({"name": stream_name, "subjects": [subject]})
+            except TypeError:
+                # nats-py >=2.11 uses ``StreamConfig`` instead of dicts.
+                from nats.js.api import StreamConfig
+
+                await jsm.add_stream(StreamConfig(name=stream_name, subjects=[subject]))
     finally:
         await nc.close()
 
