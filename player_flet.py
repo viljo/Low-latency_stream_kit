@@ -100,6 +100,8 @@ def _build_sources(
         js_client = JetStreamThreadedClient(nats_servers)
         js_client.start()
         receivers: dict[str, ReceiverFactory | TSPIReceiver | CompositeTSPIReceiver] = {}
+        fallback_subjects: dict[str, list[str]] = {}
+        fallback_stream = None
         for name, subjects in subject_map.items():
             durable_base = f"{durable_prefix}-{name}"
             stream_name = js_stream if name == "livestream" else historical_stream
@@ -111,6 +113,9 @@ def _build_sources(
                         subject, durable=durable, stream=stream_name
                     )
                 except NotFoundError as exc:
+                    if name != "livestream" and historical_stream is None:
+                        fallback_subjects[name] = subjects
+                        break
                     js_client.close()
                     stream_hint = stream_name or "auto-discovered stream"
                     raise RuntimeError(
@@ -121,14 +126,29 @@ def _build_sources(
                         " stream name."
                     ) from exc
                 receiver_list.append(TSPIReceiver(consumer))
+            if name in fallback_subjects:
+                continue
             if len(receiver_list) == 1:
                 receivers[name] = receiver_list[0]
             else:
                 receivers[name] = CompositeTSPIReceiver(receiver_list)
+        if fallback_subjects:
+            print(
+                "[player] Falling back to in-memory replay sources for: "
+                + ", ".join(sorted(fallback_subjects)),
+                file=sys.stderr,
+            )
+            fallback_stream, fallback_factories = connect_in_memory(fallback_subjects)
+            receivers.update(fallback_factories)
         tag_sender = TagSender(js_client.publisher(), sender_id="player-ui")
 
         def _close() -> None:
             js_client.close()
+            if fallback_stream is not None:
+                try:
+                    fallback_stream.close()
+                except AttributeError:
+                    pass
 
         cleanup = _close
         return receivers, tag_sender, cleanup

@@ -187,7 +187,7 @@ class FlightGeneratorApp:
 
     async def _update_metrics_async(self, payload: str) -> None:
         self._apply_metrics(payload)
-        await self.page.update_async()
+        self.page.update()
 
     # ------------------------------------------------------------------ Control handlers
 
