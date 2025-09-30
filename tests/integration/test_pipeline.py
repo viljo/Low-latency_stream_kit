@@ -168,6 +168,40 @@ async def _fetch_tspi_messages(url: str, limit: int = 10) -> List[dict]:
     return collected
 
 
+async def _wait_for_stream_creation(
+    url: str,
+    *,
+    stream_name: str = "TSPI",
+    subject: str = "tspi.>",
+    timeout: float = 15.0,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            nc = await nats.connect(url)
+        except Exception:
+            await asyncio.sleep(0.25)
+            continue
+        try:
+            try:
+                jsm = await nc.jetstream_manager()
+            except Exception:
+                await asyncio.sleep(0.25)
+                continue
+            try:
+                await jsm.stream_info(stream_name)
+                return True
+            except Exception:
+                try:
+                    await jsm.find_stream_name_by_subject(subject)
+                    return True
+                except Exception:
+                    await asyncio.sleep(0.25)
+        finally:
+            await nc.close()
+    return False
+
+
 def _parse_metrics(lines: List[str]) -> List[dict]:
     metrics: List[dict] = []
     for entry in lines:
@@ -185,22 +219,6 @@ def _parse_metrics(lines: List[str]) -> List[dict]:
 
 @pytest.mark.timeout(180)
 def test_live_pipeline_generates_and_receives(nats_server, log_buffer, temp_logdir):
-    player_cmd = [
-        sys.executable,
-        "player_flet.py",
-        "--headless",
-        "--source",
-        "live",
-        "--nats-server",
-        nats_server,
-        "--duration",
-        "12",
-        "--json-stream",
-        "--exit-on-idle",
-        "5",
-    ]
-    player_proc, player_thread = _start_process(player_cmd, log_buffer, "player")
-
     gen_cmd = [
         sys.executable,
         "tspi_generator_flet.py",
@@ -216,21 +234,49 @@ def test_live_pipeline_generates_and_receives(nats_server, log_buffer, temp_logd
     ]
     generator_proc, generator_thread = _start_process(gen_cmd, log_buffer, "generator")
 
+    player_proc: subprocess.Popen[str] | None = None
+    player_thread: threading.Thread | None = None
     try:
-        generator_proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        generator_proc.kill()
-        pytest.fail("Generator did not exit in time")
+        stream_ready = asyncio.run(_wait_for_stream_creation(nats_server))
+        assert stream_ready, "JetStream stream was not created by generator in time"
+
+        player_cmd = [
+            sys.executable,
+            "player_flet.py",
+            "--headless",
+            "--source",
+            "live",
+            "--nats-server",
+            nats_server,
+            "--duration",
+            "12",
+            "--json-stream",
+            "--exit-on-idle",
+            "5",
+        ]
+        player_proc, player_thread = _start_process(player_cmd, log_buffer, "player")
+
+        try:
+            generator_proc.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            generator_proc.kill()
+            pytest.fail("Generator did not exit in time")
+
+        if player_proc is not None:
+            try:
+                player_proc.wait(timeout=50)
+            except subprocess.TimeoutExpired:
+                player_proc.kill()
+                pytest.fail("Player did not exit in time")
     finally:
+        if generator_proc.poll() is None:
+            generator_proc.kill()
         generator_thread.join(timeout=5)
 
-    try:
-        player_proc.wait(timeout=40)
-    except subprocess.TimeoutExpired:
-        player_proc.kill()
-        pytest.fail("Player did not exit in time")
-    finally:
-        player_thread.join(timeout=5)
+        if player_proc is not None and player_proc.poll() is None:
+            player_proc.kill()
+        if player_thread is not None:
+            player_thread.join(timeout=5)
 
     player_metrics = _parse_metrics(log_buffer.get("player", []))
     assert player_metrics, "Player did not emit JSON metrics"
