@@ -25,6 +25,113 @@ from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
 from tspi_kit.datastore import MessageRecord, TagRecord
 from tspi_kit.jetstream_client import normalize_stream_subjects
 
+
+async def prepare_stream(
+    js,
+    replicas: int,
+    *,
+    NotFoundError: type[BaseException],
+    BadRequestError: type[BaseException] | None = None,
+    timeout_exceptions: Sequence[type[BaseException]] = (),
+    deadline_seconds: float = 60.0,
+) -> None:
+    """Ensure the TSPI stream exists with the expected subjects and replicas."""
+
+    stream_name = "TSPI"
+    subjects = normalize_stream_subjects(["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"])
+    timeout_types = tuple(dict.fromkeys(timeout_exceptions))
+    deadline = time.monotonic() + deadline_seconds
+    last_info = None
+
+    while True:
+        try:
+            try:
+                last_info = await js.stream_info(stream_name)
+            except NotFoundError:
+                await js.add_stream(
+                    name=stream_name,
+                    subjects=subjects,
+                    num_replicas=replicas,
+                    retention="limits",
+                    max_msgs=-1,
+                    max_bytes=-1,
+                )
+                last_info = await js.stream_info(stream_name)
+            else:
+                existing_info = last_info
+                try:
+                    await js.update_stream(
+                        name=stream_name,
+                        subjects=subjects,
+                        num_replicas=replicas,
+                    )
+                except Exception as exc:  # pragma: no cover - handled below when possible
+                    if (
+                        BadRequestError is not None
+                        and isinstance(exc, BadRequestError)
+                        and existing_info is not None
+                    ):
+                        existing_config = getattr(existing_info, "config", None)
+                        existing_subjects_raw = getattr(existing_config, "subjects", None) or []
+                        existing_subjects = normalize_stream_subjects(existing_subjects_raw)
+                        if existing_subjects != subjects:
+                            await js.delete_stream(stream_name)
+                            await js.add_stream(
+                                name=stream_name,
+                                subjects=subjects,
+                                num_replicas=replicas,
+                                retention="limits",
+                                max_msgs=-1,
+                                max_bytes=-1,
+                            )
+                            last_info = await js.stream_info(stream_name)
+                            continue
+                    raise
+                last_info = await js.stream_info(stream_name)
+
+            if replicas > 1 and last_info is not None:
+                cluster = getattr(last_info, "cluster", None)
+                if cluster is not None and not getattr(cluster, "leader", None):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Timed out preparing JetStream stream")
+                    await asyncio.sleep(1.0)
+                    continue
+                replica_status = getattr(cluster, "replicas", None) if cluster else None
+                if replica_status:
+                    ready_replicas = [
+                        replica
+                        for replica in replica_status
+                        if getattr(replica, "current", False)
+                        and not getattr(replica, "offline", False)
+                    ]
+                    if len(ready_replicas) < min(replicas, len(replica_status)):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Timed out preparing JetStream stream")
+                        await asyncio.sleep(1.0)
+                        continue
+            break
+        except Exception as exc:
+            if timeout_types and isinstance(exc, timeout_types):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out preparing JetStream stream") from exc
+                await asyncio.sleep(1.0)
+                continue
+            if BadRequestError is not None and isinstance(exc, BadRequestError):
+                err_code = getattr(exc, "err_code", None)
+                description = getattr(exc, "description", "")
+                if err_code == 10005 or "no suitable peers" in str(description).lower():
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Timed out preparing JetStream stream") from exc
+                    await asyncio.sleep(1.0)
+                    continue
+            raise
+
+    for durable in ("demo-player", "demo-receiver"):
+        try:
+            await js.delete_consumer(stream_name, durable)
+        except NotFoundError:
+            continue
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 APT_UPDATED = False
 
@@ -608,82 +715,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                     raise RuntimeError("Timed out waiting for JetStream cluster to become ready.")
                 await asyncio.sleep(1.0)
 
-    async def prepare_stream(js, replicas: int) -> None:
-        stream_name = "TSPI"
-        subjects = normalize_stream_subjects(["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"])
-        timeout_candidates: list[type[BaseException]] = []
-        for candidate in (
-            NATSTimeoutError,
-            JSNATSTimeoutError,
-            asyncio.TimeoutError,
-            TimeoutError,
-        ):
-            if isinstance(candidate, type):
-                timeout_candidates.append(candidate)
-        timeout_exceptions = tuple(dict.fromkeys(timeout_candidates))
-
-        deadline = time.monotonic() + 60.0
-        last_info = None
-        while True:
-            try:
-                try:
-                    last_info = await js.stream_info(stream_name)
-                except NotFoundError:
-                    await js.add_stream(
-                        name=stream_name,
-                        subjects=subjects,
-                        num_replicas=replicas,
-                        retention="limits",
-                        max_msgs=-1,
-                        max_bytes=-1,
-                    )
-                    last_info = await js.stream_info(stream_name)
-                else:
-                    await js.update_stream(
-                        {"name": stream_name, "subjects": subjects, "num_replicas": replicas}
-                    )
-                    last_info = await js.stream_info(stream_name)
-                if replicas > 1 and last_info is not None:
-                    cluster = getattr(last_info, "cluster", None)
-                    if cluster is not None and not getattr(cluster, "leader", None):
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Timed out preparing JetStream stream")
-                        await asyncio.sleep(1.0)
-                        continue
-                    replica_status = getattr(cluster, "replicas", None) if cluster else None
-                    if replica_status:
-                        ready_replicas = [
-                            replica
-                            for replica in replica_status
-                            if getattr(replica, "current", False)
-                            and not getattr(replica, "offline", False)
-                        ]
-                        if len(ready_replicas) < min(replicas, len(replica_status)):
-                            if time.monotonic() >= deadline:
-                                raise RuntimeError("Timed out preparing JetStream stream")
-                            await asyncio.sleep(1.0)
-                            continue
-                break
-            except timeout_exceptions as exc:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("Timed out preparing JetStream stream") from exc
-                await asyncio.sleep(1.0)
-            except Exception as exc:
-                if BadRequestError is not None and isinstance(exc, BadRequestError):
-                    err_code = getattr(exc, "err_code", None)
-                    description = getattr(exc, "description", "")
-                    if err_code == 10005 or "no suitable peers" in str(description).lower():
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Timed out preparing JetStream stream") from exc
-                        await asyncio.sleep(1.0)
-                        continue
-                raise
-        for durable in ("demo-player", "demo-receiver"):
-            try:
-                await js.delete_consumer(stream_name, durable)
-            except NotFoundError:
-                continue
-
     async def run_async() -> None:
         cluster = JetStreamClusterManager(log_dir=args.log_dir)
         datastore_cluster: TimescaleHACluster | None = None
@@ -706,7 +737,23 @@ def main(argv: Iterable[str] | None = None) -> int:
             try:
                 nc = await connect_to_cluster(cluster.client_urls)
                 js = nc.jetstream()
-                await prepare_stream(js, cluster.replicas)
+                timeout_candidates: list[type[BaseException]] = []
+                for candidate in (
+                    NATSTimeoutError,
+                    JSNATSTimeoutError,
+                    asyncio.TimeoutError,
+                    TimeoutError,
+                ):
+                    if isinstance(candidate, type):
+                        timeout_candidates.append(candidate)
+                timeout_exceptions = tuple(dict.fromkeys(timeout_candidates))
+                await prepare_stream(
+                    js,
+                    cluster.replicas,
+                    NotFoundError=NotFoundError,
+                    BadRequestError=BadRequestError,
+                    timeout_exceptions=timeout_exceptions,
+                )
                 await asyncio.sleep(2.0)
 
                 if datastore_cluster is None:

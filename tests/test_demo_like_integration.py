@@ -7,9 +7,11 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 import cbor2
+
+from nats.js.errors import BadRequestError, NotFoundError
 
 from tspi_kit import (
     Archiver,
@@ -20,6 +22,8 @@ from tspi_kit import (
     TSPIFlightGenerator,
     TSPIProducer,
 )
+from tspi_kit.commands import COMMAND_SUBJECT_PREFIX
+from tspi_kit.jetstream_client import normalize_stream_subjects
 from tspi_kit.jetstream_sim import JetStreamMessage, _match_subject
 
 _DEMO_PATH = Path(__file__).resolve().parents[1] / "demo"
@@ -99,6 +103,69 @@ class _DemoLikeJetStream(InMemoryJetStream):
         return _AsyncSubscription(self, subject)
 
 
+class _RestartableDemoStream:
+    """Stub JetStream context emulating restart behaviour for regression tests."""
+
+    def __init__(self) -> None:
+        self._subjects: List[str] | None = None
+        self._replicas = 1
+        self.fail_on_mismatch = False
+        self.update_calls: List[dict[str, object]] = []
+        self.delete_calls = 0
+        self.messages: List[tuple[str, bytes]] = []
+        self.deleted_consumers: List[tuple[str, str]] = []
+
+    async def stream_info(self, name: str):
+        if self._subjects is None:
+            raise NotFoundError()
+        config = SimpleNamespace(subjects=list(self._subjects))
+        return SimpleNamespace(config=config, cluster=None)
+
+    async def add_stream(
+        self,
+        *,
+        name: str,
+        subjects: Sequence[str],
+        num_replicas: int,
+        retention: str,
+        max_msgs: int,
+        max_bytes: int,
+    ) -> None:  # noqa: ARG002 - parity with real client
+        self._subjects = list(subjects)
+        self._replicas = num_replicas
+
+    async def update_stream(self, *args, **kwargs) -> None:
+        assert not args, "update_stream should receive keyword arguments"
+        if not kwargs:
+            raise AssertionError("update_stream requires keyword arguments")
+        self.update_calls.append(dict(kwargs))
+        subjects = kwargs.get("subjects")
+        if subjects is None:
+            raise AssertionError("subjects keyword argument missing")
+        normalized_existing = normalize_stream_subjects(self._subjects or [])
+        normalized_new = normalize_stream_subjects(subjects)
+        if self.fail_on_mismatch and normalized_existing != normalized_new:
+            raise BadRequestError(description="stream config conflict", err_code=50076)
+        self._subjects = list(subjects)
+        self._replicas = int(kwargs.get("num_replicas", self._replicas))
+
+    async def delete_stream(self, name: str) -> None:
+        self.delete_calls += 1
+        self._subjects = None
+
+    async def delete_consumer(self, stream: str, durable: str) -> None:  # noqa: ARG002
+        self.deleted_consumers.append((stream, durable))
+        raise NotFoundError()
+
+    def publish(self, subject: str, payload: bytes) -> bool:
+        if self._subjects is None:
+            raise RuntimeError("Stream is not configured")
+        if not any(_match_subject(subject, candidate) for candidate in self._subjects):
+            raise ValueError(f"Subject {subject!r} rejected by stream configuration")
+        self.messages.append((subject, payload))
+        return True
+
+
 async def _run_demo_like_flow() -> None:
     base_epoch = 1_700_100_000.0
     jetstream = _DemoLikeJetStream()
@@ -170,3 +237,54 @@ def test_demo_like_integration() -> None:
     """Exercise generator → JetStream → archiver → datastore → replay flow."""
 
     asyncio.run(_run_demo_like_flow())
+
+
+async def _run_demo_restart_flow() -> None:
+    stream = _RestartableDemoStream()
+    await stream.add_stream(
+        name="TSPI",
+        subjects=["tspi.>"],
+        num_replicas=1,
+        retention="limits",
+        max_msgs=-1,
+        max_bytes=-1,
+    )
+    stream.fail_on_mismatch = True
+
+    await _DEMO_MODULE.prepare_stream(
+        stream,
+        1,
+        NotFoundError=NotFoundError,
+        BadRequestError=BadRequestError,
+        timeout_exceptions=(asyncio.TimeoutError,),
+    )
+
+    stream.fail_on_mismatch = False
+    await _DEMO_MODULE.prepare_stream(
+        stream,
+        1,
+        NotFoundError=NotFoundError,
+        BadRequestError=BadRequestError,
+        timeout_exceptions=(asyncio.TimeoutError,),
+    )
+
+    expected_subjects = normalize_stream_subjects(
+        ["tspi.>", f"{COMMAND_SUBJECT_PREFIX}.>", "tags.>"]
+    )
+    assert normalize_stream_subjects(stream._subjects or []) == expected_subjects
+    assert stream.delete_calls >= 1
+    assert stream.update_calls, "prepare_stream should invoke update_stream"
+    assert all("name" in call and "subjects" in call for call in stream.update_calls)
+
+    assert stream.publish("tspi.demo.flight", b"telemetry")
+    assert stream.publish("tags.demo.created", b"tag")
+    assert stream.messages[-2:] == [
+        ("tspi.demo.flight", b"telemetry"),
+        ("tags.demo.created", b"tag"),
+    ]
+
+
+def test_demo_restart_allows_second_run(tmp_path) -> None:  # noqa: ARG001
+    """Regression test for restarting the demo with an existing store directory."""
+
+    asyncio.run(_run_demo_restart_flow())
