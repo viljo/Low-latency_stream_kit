@@ -771,7 +771,7 @@ def connect_in_memory(
 
 def ensure_offscreen(headless: bool) -> None:
     # Flet does not require special handling for headless execution, but the
-    # function remains for backwards compatibility with the old Qt entry point.
+    # function remains for backwards compatibility with the retired desktop UI.
     _ = headless
 
 

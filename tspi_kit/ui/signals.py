@@ -7,13 +7,13 @@ T = TypeVar("T")
 
 
 class Signal(Generic[T]):
-    """Small Qt-like signal implementation.
+    """Minimal signal/slot helper used by the Python UIs.
 
-    The implementation intentionally mirrors the minimal subset of the
-    ``pyqtSignal`` API that the project relied on.  Subscribers are stored as a
-    simple list of callables and invoked synchronously when ``emit`` is called.
-    ``connect`` ignores duplicate registrations to keep behaviour predictable in
-    tests.
+    The implementation intentionally mirrors the small subset of the
+    previously-used ``pyqtSignal`` API that the project relied on. Subscribers
+    are stored as a simple list of callables and invoked synchronously when
+    ``emit`` is called. ``connect`` ignores duplicate registrations to keep
+    behaviour predictable in tests.
     """
 
     def __init__(self) -> None:
